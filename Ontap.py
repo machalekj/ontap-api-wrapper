@@ -19,14 +19,14 @@ class OntapException(Exception):
         self.reason = reason
 
 
-class Filer:
+class Filer(object):
     """A NetApp filer."""
 
-    def __init__(self, hostname, user, passwd):
+    def __init__(self, hostname, user, passwd, transport_type = 'HTTPS'):
         self.api = NaServer(hostname, 1, 3)
         self.api.set_style('LOGIN')
         self.api.set_admin_user(user, passwd)
-        self.api.set_transport_type('HTTPS')
+        self.api.set_transport_type(transport_type)
 
         self.name = hostname
         out = self.invoke('system-get-version')
@@ -112,7 +112,7 @@ class Filer:
 
         out = self.invoke('snmp-get', 'object-id', oid)
         return out.child_get_string('value')
-
+    
     def get_perf_object(self, objectname, read=[], instances=[]):
         """
         Return objectname's performance data in a dict tree.
@@ -400,8 +400,112 @@ class Filer:
 
         return out_list
 
+    def _natree_to_dict(self, out):
+        """
+        Convert NaElement tree recursively to dict
+        """
+        
+        result = {}
+        
+        if out.has_children():
+            for child in out.children_get():
+                result.update(self._natree_to_dict(child))
+                
+            result = {out.element['name']: result}
+        else:
+            result[out.element['name']] = out.element['content']
 
-class Aggr:
+        return result
+    
+    def rdfile(self, filename):
+        """
+        Read a file
+        """
+        
+        out = self.invoke_cli('rdfile', filename)
+        return out.child_get_string('cli-output')
+    
+    def wrfile(self, filename, line, append = True):
+        """
+        Write a line to file
+        """
+        
+        if append:
+            out = self.invoke_cli('wrfile', '-a', filename, line)
+        else:
+            out = self.invoke_cli('wrfile', filename, line)
+            
+        return out.child_get_string('cli-output')
+    
+    def get_quota_entries(self, volume_name = None):
+        result = {}
+        # get quota entries
+        quotaListEntries = self.invoke('quota-list-entries')
+        if quotaListEntries.has_children():
+            quotaEntries = quotaListEntries.child_get('quota-entries')
+            if quotaEntries.has_children():
+                for entry in quotaEntries.children_get():
+                    quota = self._natree_to_dict(entry)
+                    quota = quota['quota-entry']
+        
+                    if not volume_name or quota['volume'] == volume_name:
+                        result[quota['quota-target']] = quota
+
+        return result
+        
+    def get_quota_status(self, volume_name = None):
+        result = {}
+        # get quota entries
+        quotaEntries = self.get_quota_entries(volume_name)
+        if quotaEntries:
+            for target, quotaEntry in quotaEntries.iteritems():
+                # get actual quota
+                quotas = self.invoke('quota-get-entry',
+                                          'quota-target', target,
+                                          'qtree', quotaEntry['qtree'],
+                                          'quota-type', quotaEntry['quota-type'],
+                                          'volume', quotaEntry['volume'])
+                
+                quota = self._natree_to_dict(quotas)
+                quotaEntry.update(quota)
+            
+                result[target] = quotaEntry
+            
+        return result
+                                                                                        
+    def get_quota_report(self, volume_name = None):
+        result = {}
+        
+        if volume_name:
+            volumes = [self.get_volume(volume_name)]
+        else:
+            volumes = self.get_volumes()
+            
+        for volume in volumes:
+            result.update(volume.get_quota_report())
+                
+        return result
+    
+    def get_sis_state(self):
+        out = self.invoke_cli('sis','status')
+        return out.child_get_string('cli-output')
+                                                                                        
+    def get_qtree_stats(self, volume_name = None):
+        if None == volume_name:
+            out = self.invoke_cli('qtree','stats')
+        else:
+            out = self.invoke_cli('qtree','stats', volume_name)
+        return out.child_get_string('cli-output')
+
+    def get_sysstat(self, flag = '-x', count = 1, interval = 10, summary = False):
+        if summary:
+            out = self.invoke_cli('sysstat', flag, '-s', '-c', count, interval)
+        else:
+            out = self.invoke_cli('sysstat', flag, '-c', count, interval)
+        return out.child_get_string('cli-output')
+                                                                                        
+    
+class Aggr(object):
     """An aggregate on a NetApp filer."""
 
     def __init__(self, filer, name):
@@ -451,7 +555,7 @@ class Aggr:
         return info
         
 
-class Export:
+class Export(object):
     """An NFS export on a NetApp Filer."""
 
     def __init__(self, filer, path):
@@ -471,7 +575,7 @@ class Export:
             return False
 
     def create_rule(self, nosuid=True, root_hosts = [], ro_hosts = [],
-                    rw_hosts = [], sec_flavor = 'sys'):
+                    rw_hosts = [], sec_flavor = 'sys', anon = None):
         """
         Create new exportfs rule for an NFS share.
 
@@ -492,6 +596,9 @@ class Export:
         #
 
         rule_info = NaElement('exports-rule-info')
+        if None != anon:
+            rule_info.child_add(NaElement('anon', anon))
+            
         rule_info.child_add(NaElement('nosuid', nosuid_val))
         rule_info.child_add(NaElement('pathname', self.path))
 
@@ -560,6 +667,22 @@ class Export:
         else:
             return ''
 
+    def get_anon(self):
+        """
+        Return boolean reflecting anon setting on export.
+
+        If export does not exist, return an empty string.
+        """
+
+        rules = self._get_rules()
+        if rules:
+            if rules.child_get('anon'):
+                return rules.child_get_int('anon')
+            else:
+                return False
+        else:
+            return False
+
     def get_ro_hosts(self):
         """
         Return list of hosts permitted read-only access.
@@ -593,7 +716,7 @@ class Export:
             'sec-flavor-info').child_get_string('flavor')
 
     def modify_rule(self, nosuid=True, root_hosts = [], ro_hosts = [],
-                    rw_hosts = [], sec_flavor = 'sys'):
+                    rw_hosts = [], sec_flavor = 'sys', anon = None):
         """
         Change the exportfs rule for an NFS share.
 
@@ -617,6 +740,10 @@ class Export:
         #
 
         rule_info = NaElement('exports-rule-info')
+        
+        if None != anon:
+            rule_info.child_add(NaElement('anon', anon))
+
         rule_info.child_add(NaElement('nosuid', nosuid_val))
         rule_info.child_add(NaElement('pathname', self.path))
 
@@ -658,7 +785,7 @@ class Export:
         else:
             raise
 
-class FlexVol:
+class FlexVol(object):
     """A FlexVol on a NetApp Filer."""
 
     def __init__(self, filer, name):
@@ -676,6 +803,24 @@ class FlexVol:
                           'volume', self.name,
                           'containing-aggr-name', aggr,
                           'size', size)
+
+    def delete(self):
+        self.filer.invoke('volume-destroy',
+                          'name', self.name)
+
+    def offline(self):
+        self.filer.invoke('volume-offline',
+                          'name', self.name)
+
+    def online(self):
+        self.filer.invoke('volume-online',
+                          'name', self.name)
+
+    def get_info(self):
+        out = self.filer.invoke('volume-list-info').child_get('volumes')
+        for volume in out.children_get():
+            if volume.child_get_string('name') == self.name:
+                return self.filer._natree_to_dict(volume)['volume-info']
 
     def autosize_is_enabled(self):
         out = self.filer.invoke('volume-autosize-get', 'volume', self.name)
@@ -793,7 +938,7 @@ class FlexVol:
                 raise
 
         pri_vol = out.child_get('priority-volume').child_get(
-            'priority-volume.info')
+            'priority-volume-info')
         return pri_vol.child_get_string('cache-policy')
 
     def get_security_style(self):
@@ -1209,8 +1354,164 @@ class FlexVol:
                           'volume-name', self.name,
                           'schedule-name', schedule)
         
+    def start_sis(self):
+        self.filer.invoke('sis-start',
+                          'path', '/vol/' + self.name)
+        
+    def stop_sis(self):
+        self.filer.invoke('sis-stop',
+                          'path', '/vol/' + self.name)
+        
+    def set_sis_schedule(self, schedule, enable_compression = False, enable_inline_compression = False):
+        self.filer.invoke('sis-set-config',
+                          'path', self.path,
+                          'enable-compression', enable_compression,
+                          'enable-inline-compression', enable_inline_compression)
 
-class Share:
+    def get_quota_state(self):
+        out = self.filer.invoke_cli('quota', 'status', self.name)
+        return out.child_get_string('status')
+
+    def set_quota_state(self, state):
+        if state == 'enabled' or state == 'Enabled' or state == 'on' or state == 'On' or state == 'ON':
+            self.filer.invoke('quota-on', 'volume', self.name)
+        elif state == 'disabled' or state == 'Disabled' or state == 'off' or state == 'Off' or state == 'OFF':
+            self.filer.invoke('quota-off', 'volume', self.name)
+        else:
+            raise OntapException('Unknown quota state.')
+        
+    def get_quota_entries(self):
+        return self.filer.get_quota_entries(self.name)
+        
+    def get_quota_status(self):
+        return self.filer.get_quota_status(self.name)
+    
+    def get_quota_report(self):
+        quotas = self.filer.invoke('quota-report',
+                                  'volume', self.name).child_get('quotas')
+
+        result = {}
+        
+        if quotas.has_children():
+            for quotaEntry in quotas.children_get():
+                
+                quota = self.filer._natree_to_dict(quotaEntry)
+                quota = quota['quota']
+
+                if quota['volume'] == self.name: 
+                    result[quota['quota-target']] = quota
+
+        return result
+
+    def remove_quota(self, path):
+        if '/' != path[0]:
+            path = self.path + '/' + path
+
+        self.filer.invoke('quota-delete-entry',
+                            'quota-type', 'tree',
+                            'quota-target', path,
+                            'volume', self.name,
+                            'qtree', None)
+        
+    def read_file(self, filename, length = 4096, offset = 0):
+        return self.filer.invoke('file-read-file',
+                                 'path', '{}/{}'.format(self.path, filename.rstrip('/')),
+                                 'offset', offset,
+                                 'length', length)
+
+    def write_file(self, filename, data, offset = 0):
+        return self.filer.invoke('file-write-file',
+                                 'path', '{}/{}'.format(self.path, filename.rstrip('/')),
+                                 'data', data,
+                                 'length', length)
+
+    def delete_file(self, filename):
+        return self.filer.invoke('file-delete-file',
+                                 'path', '{}/{}'.format(self.path, filename.rstrip('/')))
+
+    def get_qtree_stats(self):
+        return self.filer.get_qtree_stats(self.name)
+
+    def get_priorities(self):
+        """Return the FlexShare level, system priorities for the volume."""
+
+        try:
+            out = self.filer.invoke('priority-list-info-volume',
+                                    'volume', self.name)
+        except OntapApiException as e:
+            # If volume doesn't have a priority schedule, it is default:
+            if e.reason == 'unable to find volume' and e.errno == '2':
+                return {'level': 'default', 'system': 'default'}
+            else:
+                raise
+
+        pri_vol = out.child_get('priority-volume').child_get(
+            'priority-volume-info')
+        return {'level': pri_vol.child_get_string('level'),
+                'system': pri_vol.child_get_string('system')} 
+
+    def set_priorities(self, level = 'default', system = 'default'):
+        """Set the FlexShare level, system priorities for the volume."""
+
+        self.filer.invoke('priority-set-volume',
+                                    'volume', self.name,
+                                    'level', level,
+                                    'system', system)
+
+
+class Qtree(object):
+    """A Qtree of a FlexVol on a NetApp Filer."""
+    def __init__(self, filer, volume, name):
+        self.filer = filer
+        self.volume = volume
+        self.name = name
+        self.path = '/vol/' + volume + '/' + name
+        
+    def create(self):
+        self.filer.invoke('qtree-create',
+                          'volume', self.volume,
+                          'qtree', self.name)
+        
+    def delete(self):
+        self.filer.invoke('qtree-delete',
+                          'qtree', self.path)
+        
+    def get_quota_report(self):
+        return self.filer.invoke('quota-report',
+                          'volume', self.path)
+
+    def resize_quota(self):
+        self.filer.invoke('quota-resize',
+                          'volume', self.volume)
+        
+    """ invoke quota-add-entry, disk_limit, try persistent """
+    def set_quota_size(self, size):
+        report = self.filer.get_quota_entries(self.volume)
+        
+        if not report or not report[self.path]:
+            self.filer.invoke('quota-add-entry',
+                                'quota-type', 'tree',
+                                'quota-target', self.path,
+                                'volume', self.volume,
+                                'disk-limit', size,
+                                'qtree', None)
+        else:
+            self.filer.invoke('quota-modify-entry',
+                                'quota-type', 'tree',
+                                'quota-target', self.path,
+                                'volume', self.volume,
+                                'disk-limit', size,
+                                'qtree', None)
+
+    def remove_quota(self):
+            self.filer.invoke('quota-delete-entry',
+                                'quota-type', 'tree',
+                                'quota-target', self.path,
+                                'volume', self.volume,
+                                'qtree', None)
+        
+
+class Share(object):
     """A CIFS share on a NetApp filer."""
 
     def __init__(self, filer, name):
@@ -1393,3 +1694,83 @@ class Share:
             if m:
                 return m.groups()[0]
         return False
+
+
+class Vlan(object):
+    """A Vlan on a NetApp filer."""
+    def __init__(self, filer, interface, vlan_id, gvrp_enabled = False):
+        self.filer          = filer  
+        self.parent         = interface
+        self.interface      = interface + '-' + str(vlan_id)      
+        self.vlan_id        = str(vlan_id)
+        self.gvrp_enabled   = gvrp_enabled 
+
+    def configured(self):
+        """
+        Determind if a vlan with ID <number> already exists.
+
+        Return boolean.
+        """
+        # @TODO JDS: check whether vlan already exists
+        if self.get_config():
+            return True
+        else:
+            return False
+
+    def create(self):
+        """ Equivalent to 'vlan create <interface> <number>' on the CLI. """
+        info = NaElement('vlan-info');
+        info.child_add(NaElement('gvrp-enabled',     self.gvrp_enabled))
+        info.child_add(NaElement('interface-name',   self.interface))
+        info.child_add(NaElement('parent-interface', self.parent))
+        info.child_add(NaElement('vlanid',           self.vlan_id))
+        nae = NaElement('net-vlan-create')
+        nae.child_add(info)
+        self.filer.invoke_elem(nae)
+
+    def delete(self):
+        """ Equivalent to 'vlan delete <interface> <vlan_id>' on the CLI. """
+        info = NaElement('vlan-info');
+        info.child_add(NaElement('gvrp-enabled',     self.gvrp_enabled))
+        info.child_add(NaElement('interface-name',   self.interface))
+        info.child_add(NaElement('parent-interface', self.parent))
+        info.child_add(NaElement('vlanid',           self.vlan_id))
+        nae = NaElement('net-vlan-delete')
+        nae.child_add(info)
+        self.filer.invoke_elem(nae)
+        
+    def ifconfig_set(self, ip_address, netmask, ipspace_name = 'default-ipspace', persistent = True):
+        address = NaElement('ip-address-info')
+        #address.child_add(NaElement('addr-family', 'af-inet'))
+        address.child_add(NaElement('address', ip_address))
+        if persistent:
+            address.child_add(NaElement('persistent', 'true'))
+        address.child_add(NaElement('netmask-or-prefix', netmask))
+        primary = NaElement('v4-primary-address')
+        primary.child_add(address)
+
+        info = NaElement('interface-config-info')   
+        info.child_add(NaElement('interface-name', self.interface))
+        info.child_add(NaElement('ipspace-name',  ipspace_name))
+        info.child_add(primary)
+
+        nae = NaElement('net-ifconfig-set')
+        nae.child_add(info)
+        self.filer.invoke_elem(nae)
+        
+    def ifconfig_get(self):
+        nae = NaElement('net-ifconfig-get')
+        out = self.filer.invoke_elem(nae)
+        for config in out.child_get('interface-config-info').children_get():
+            interface = config.child_get_string('interface-name')
+            if interface == self.interface:
+                return self.filer._natree_to_dict(config)
+        
+    def get_config(self):
+        out = self.filer.invoke('net-config-get-active')
+        vlans = out.child_get('net-config-info').child_get('vlans')
+        for vlan in vlans.children_get():
+            vlan_info = vlan.child_get('vlan-info')
+            vlan_id   = vlan_info.child_get_string('vlanid')
+            if vlan_id == self.vlan_id:
+                return self.filer._natree_to_dict(vlan_info) 
