@@ -1415,19 +1415,19 @@ class FlexVol(object):
         
     def read_file(self, filename, length = 4096, offset = 0):
         return self.filer.invoke('file-read-file',
-                                 'path', '{}/{}'.format(self.path, filename.rstrip('/')),
+                                 'path', '{0}/{1}'.format(self.path, filename.rstrip('/')),
                                  'offset', offset,
                                  'length', length)
 
     def write_file(self, filename, data, offset = 0):
         return self.filer.invoke('file-write-file',
-                                 'path', '{}/{}'.format(self.path, filename.rstrip('/')),
+                                 'path', '{0}/{1}'.format(self.path, filename.rstrip('/')),
                                  'data', data,
                                  'length', length)
 
     def delete_file(self, filename):
         return self.filer.invoke('file-delete-file',
-                                 'path', '{}/{}'.format(self.path, filename.rstrip('/')))
+                                 'path', '{0}/{1}'.format(self.path, filename.rstrip('/')))
 
     def get_qtree_stats(self):
         return self.filer.get_qtree_stats(self.name)
