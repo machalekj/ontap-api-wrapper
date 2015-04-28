@@ -1,5 +1,7 @@
 import re
 import sys
+import operator
+from xml.sax.saxutils import escape
 
 from NaElement import NaElement
 from NaServer import NaServer
@@ -10,6 +12,9 @@ class OntapApiException(Exception):
     def __init__(self, errno, reason):
         self.errno = errno
         self.reason = reason
+
+    def __str__(self):
+        return self.reason
 
 
 class OntapException(Exception):
@@ -30,14 +35,15 @@ class Filer(object):
 
         self.name = hostname
         out = self.invoke('system-get-version')
+        self.cluster_mode = out.child_get_string('is-clustered') == 'true'
         self.version = out.child_get_string('version')
 
         # Used for caching performance object descriptions:
         self.perf_obj_info = {}
 
-    def create_volume(self, name, aggr, size):
+    def create_volume(self, name, aggr, size, *args):
         v = FlexVol(self, name)
-        v.create(aggr, size)
+        v.create(aggr, size, *args)
         return v
 
     def flexshare_disable(self):
@@ -100,7 +106,7 @@ class Filer(object):
             path = export.child_get_string('pathname')
             exports.append(Export(self, path))
 
-        return exports                         
+        return exports
 
     def get_fs_status_msg(self):
         """Return a string containing the file system status message."""
@@ -310,13 +316,27 @@ class Filer(object):
         """Check if filer has FlexVol name; return boolean."""
         
         try:
-            self.invoke('volume-list-info', 'volume', name)
+            if self.cluster_mode:
+                vol_id_el = NaElement('volume-id-attributes')
+                vol_id_el.child_add(NaElement('name', name))
+                vol_attrs_el = NaElement('volume-attributes')
+                vol_attrs_el.child_add(vol_id_el)
+                query_el = NaElement('query')
+                query_el.child_add(vol_attrs_el)
+                api = NaElement('volume-get-iter')
+                api.child_add(query_el)
+                xo = self.invoke_elem(api)
+                if int(xo.child_get_string('num-records')) == 0:
+                    return False
+            else:
+                self.invoke('volume-list-info', 'volume', name)
         except OntapApiException as e:
             if e.errno == '13040':
                 return False
             else:
                 raise
         return True
+
 
     def invoke(self, *args):
         out = self.api.invoke(*args)
@@ -798,11 +818,11 @@ class FlexVol(object):
         self.name = name
         self.path = '/vol/' + name
     
-    def create(self, aggr, size):
+    def create(self, aggr, size, *args):
         self.filer.invoke('volume-create',
                           'volume', self.name,
                           'containing-aggr-name', aggr,
-                          'size', size)
+                          'size', size, *args)
 
     def delete(self):
         self.filer.invoke('volume-destroy',
@@ -816,11 +836,27 @@ class FlexVol(object):
         self.filer.invoke('volume-online',
                           'name', self.name)
 
+    def unmount(self):
+        self.filer.invoke('volume-unmount',
+                          'volume-name', self.name)
+
     def get_info(self):
-        out = self.filer.invoke('volume-list-info').child_get('volumes')
-        for volume in out.children_get():
-            if volume.child_get_string('name') == self.name:
-                return self.filer._natree_to_dict(volume)['volume-info']
+        if self.filer.cluster_mode:
+            vol_id_el = NaElement('volume-id-attributes')
+            vol_id_el.child_add(NaElement('name', self.name))
+            vol_attrs_el = NaElement('volume-attributes')
+            vol_attrs_el.child_add(vol_id_el)
+            query_el = NaElement('query')
+            query_el.child_add(vol_attrs_el)
+            api = NaElement('volume-get-iter')
+            api.child_add(query_el)
+            xo = self.filer.invoke_elem(api)
+            return self.filer._natree_to_dict(xo.child_get('attributes-list'))['attributes-list']['volume-attributes']
+        else:
+            out = self.filer.invoke('volume-list-info').child_get('volumes')
+            for volume in out.children_get():
+                if volume.child_get_string('name') == self.name:
+                    return self.filer._natree_to_dict(volume)['volume-info']
 
     def autosize_is_enabled(self):
         out = self.filer.invoke('volume-autosize-get', 'volume', self.name)
@@ -941,6 +977,40 @@ class FlexVol(object):
             'priority-volume-info')
         return pri_vol.child_get_string('cache-policy')
 
+    def get_qtrees(self):
+        if self.filer.cluster_mode:
+            qtrees = []
+            qtree_info_el = NaElement('qtree-info')
+            qtree_info_el.child_add(NaElement('volume', self.name))
+            query_el = NaElement('query')
+            query_el.child_add(qtree_info_el)
+            tag = None
+            while True:
+                api = NaElement('qtree-list-iter')
+                if tag is not None:
+                    api.child_add_string('tag', tag)
+                api.child_add_string('max-records', 10)
+                api.child_add(query_el)
+                xo = self.filer.invoke_elem(api)
+                if xo.results_status() == 'failed':
+                    raise OntapApiException(xo.results_reason())
+                for qtree in xo.child_get('attributes-list').children_get():
+                    qtree_name = qtree.child_get_string('qtree')
+                    if qtree_name: # to skip qtree None - the volume itself
+                        qtrees.append(Qtree(self.filer, self.name, qtree_name))
+                tag = xo.child_get_string('next-tag')
+                if tag is None:
+                    break
+                tag = escape(tag)
+            return qtrees
+        else:
+            raise NotImplementedError('API call qtree-list needs to be used for 7-mode. To be done.')
+
+    def create_qtree(self, qtree_name):
+        qt = Qtree(self.filer, self.name, qtree_name)
+        qt.create()
+        return qt
+
     def get_security_style(self):
         """Return the security stle (unix, ntfs, mixed) of the volume."""
 
@@ -960,7 +1030,7 @@ class FlexVol(object):
             else:
                 raise
             
-        return out.child_get('sis-object').child_get('dense-status').child_get_string('state') 
+        return out.child_get('sis-object').child_get('dense-status').child_get_string('state')
 
 
     def get_size(self):
@@ -1092,7 +1162,7 @@ class FlexVol(object):
                 sched['is-auto-update'] = False
             scheds[name] = sched
 
-        return scheds        
+        return scheds
 
     def has_snap(self, snap_name):
         """Return boolean of whether FlexVol has snapshot 'snap_name'."""
@@ -1108,40 +1178,70 @@ class FlexVol(object):
         return False
 
     def set_autosize_state(self,
-                           enabled,
-                           increment_size = False,
-                           maximum_size = False):
+                           increment_size=None,
+                           minimum_size=None,
+                           maximum_size=None,
+                           grow_treshold_percent=None,
+                           shrink_treshold_percent=None,
+                           mode=None):
         """
         Enable, disable or configure autosize for a FlexVol.
 
         Arguments:
-        enabled -- Boolean: Turn autosize on or off
         increment_size -- Increment size for growing FlexVol (string)
+        minimum_size -- Limit to which FlexVol will shrink (string)
         maximum_size -- Limit to which FlexVol will grow (string)
+        grow_treshold_percent -- Percentage of the FlexVol capacity at which autogrow is initiated (integer)
+        shrink_treshold_percent -- Percentage of the FlexVol capacity at which autoshrink is initiated (integer)
+        mode -- FlexVol's autosize mode of operation ('grow', 'grow_shrink', 'off')
 
         increment_size and maximum_size may be suffixed with a 'k', 'm', 'g' or
         't' to indicate KB, MB, GB or TB, respectively.  If there is no suffix,
         the values are treated as being in KB.
         """
-        
-        if enabled:
-            self.filer.invoke('volume-autosize-set',
-                              'volume', self.name,
-                              'is-enabled', 'true')
-        else:
-            self.filer.invoke('volume-autosize-set',
-                              'volume', self.name,
-                              'is-enabled', 'false')
-
+       
+        api_params = {
+            'volume': self.name,
+        }
         if increment_size:
-            self.filer.invoke('volume-autosize-set',
-                              'volume', self.name,
-                              'increment-size', increment_size)
-
+            api_params['increment-size'] = increment_size
         if maximum_size:
-            self.filer.invoke('volume-autosize-set',
-                              'volume', self.name,
-                              'maximum-size', maximum_size)
+            api_params['maximum-size'] = maximum_size
+        if minimum_size:
+            api_params['minimum-size'] = minimum_size
+        if grow_treshold_percent:
+            api_params['grow-threshold-percent'] = grow_treshold_percent
+        if shrink_treshold_percent:
+            api_params['shrink-threshold-percent'] = shrink_treshold_percent
+        if mode:
+            api_params['mode'] = mode
+         
+        self.filer.invoke('volume-autosize-set', *reduce(operator.add, api_params.iteritems()))
+
+    def modify_qos_policy(self, group_name):
+        if self.filer.cluster_mode:
+            vol_id_el = NaElement('volume-id-attributes')
+            vol_id_el.child_add(NaElement('name', self.name))
+            vol_attrs_el = NaElement('volume-attributes')
+            vol_attrs_el.child_add(vol_id_el)
+            query_el = NaElement('query')
+            query_el.child_add(vol_attrs_el)
+
+            vol_qos_el = NaElement('volume-qos-attributes')
+            vol_qos_el.child_add(NaElement('policy-group-name', group_name))
+            vol_attrs_set_el = NaElement('volume-attributes')
+            vol_attrs_set_el.child_add(vol_qos_el)
+            attributes_el = NaElement('attributes')
+            attributes_el.child_add(vol_attrs_set_el)
+            api = NaElement('volume-modify-iter')
+            api.child_add(query_el)
+            api.child_add(attributes_el)
+            xo = self.filer.invoke_elem(api)
+            if xo.child_get_int('num-failed'):
+                error_dict = self.filer._natree_to_dict(xo.child_get('failure-list'))['failure-list']['volume-modify-iter-info']
+                raise OntapApiException(error_dict['error-code'], error_dict['error-message'])
+        else:
+            raise NotImplementedError('API call volume-modify-iter is available only on c-mode.')
 
     def set_priority_cache_policy(self, policy):
         """CLI equivalent: 'priority set volume <self.name> cache=<policy>'"""
@@ -1398,7 +1498,7 @@ class FlexVol(object):
                 quota = self.filer._natree_to_dict(quotaEntry)
                 quota = quota['quota']
 
-                if quota['volume'] == self.name: 
+                if quota['volume'] == self.name:
                     result[quota['quota-target']] = quota
 
         return result
@@ -1509,6 +1609,15 @@ class Qtree(object):
                                 'quota-target', self.path,
                                 'volume', self.volume,
                                 'qtree', None)
+
+    def __eq__(self, x):
+        return x == self.name if isinstance(x, str) else id(x) == id(self)
+
+    def __str__(self):
+        return self.path
+
+    def __repr__(self):
+        return "<%s %s>" % (self.__class__.__name__, self.path)
         
 
 class Share(object):
