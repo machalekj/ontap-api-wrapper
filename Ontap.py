@@ -1,26 +1,29 @@
 import re
 import sys
 import operator
+from contextlib import contextmanager
 from xml.sax.saxutils import escape
+
+import six
 
 from NaElement import NaElement
 from NaServer import NaServer
 
-class OntapApiException(Exception):
-    """Expose errors surfaced in the NetApp API as exceptions."""
+class OntapException(Exception):
+    """Exception for syntax errors passed to API calls."""
 
-    def __init__(self, errno, reason):
-        self.errno = errno
+    def __init__(self, reason):
         self.reason = reason
 
     def __str__(self):
         return self.reason
 
 
-class OntapException(Exception):
-    """Exception for syntax errors passed to API calls."""
+class OntapApiException(OntapException):
+    """Expose errors surfaced in the NetApp API as exceptions."""
 
-    def __init__(self, reason):
+    def __init__(self, errno, reason):
+        self.errno = errno
         self.reason = reason
 
 
@@ -32,6 +35,7 @@ class Filer(object):
         self.api.set_style('LOGIN')
         self.api.set_admin_user(user, passwd)
         self.api.set_transport_type(transport_type)
+        #self.api.set_debug_style('NA_PRINT_DONT_PARSE')
 
         self.name = hostname
         out = self.invoke('system-get-version')
@@ -41,9 +45,28 @@ class Filer(object):
         # Used for caching performance object descriptions:
         self.perf_obj_info = {}
 
-    def create_volume(self, name, aggr, size, *args):
-        v = FlexVol(self, name)
-        v.create(aggr, size, *args)
+    @contextmanager
+    def vfiler_context(self, vfiler_name):
+        if vfiler_name is not None:
+            old_value = self.api.get_vserver()
+            self.api.set_vfiler(vfiler_name)
+        yield
+        if vfiler_name is not None:
+            self.api.set_vfiler(old_value)
+
+    @contextmanager
+    def vserver_context(self, vserver_name):
+        if vserver_name is not None:
+            old_value = self.api.get_vserver()
+            self.api.set_vserver(vserver_name)
+        yield
+        if vserver_name is not None:
+            self.api.set_vserver(old_value)
+
+    def create_volume(self, name, aggr, size,
+                      vserver_name=None, vfiler_name=None, *args, **kwargs):
+        v = FlexVol(self, name, vserver_name=vserver_name, vfiler_name=vfiler_name)
+        v.create(aggr, size, *args, **kwargs)
         return v
 
     def flexshare_disable(self):
@@ -95,18 +118,43 @@ class Filer(object):
         else:
             return False
 
-    def get_exports(self):
+    def get_exports(self, pathname=None, vserver_name=None, vfiler_name=None):
         """Return a list of Export objects of filer's configured NFS shares."""
-
-        out = self.invoke('nfs-exportfs-list-rules')
+        params = {}
+        if pathname:
+            params['pathname'] = pathname
+        if self.cluster_mode:
+            with self.vserver_context(vserver_name):
+                out = self.invoke('nfs-exportfs-list-rules', **params)
+        else:
+            with self.vfiler_context(vfiler_name):
+                out = self.invoke('nfs-exportfs-list-rules', **params)
 
         exports = []
 
-        for export in out.child_get('rules').children_get():
-            path = export.child_get_string('pathname')
-            exports.append(Export(self, path))
+        for rules in out.child_get('rules').children_get():
+            path = rules.child_get_string('pathname')
+            exp_obj = Export(self, path)
+            exp_obj._rules_cache = rules
+            exports.append(exp_obj)
 
         return exports
+
+    def get_aggregate(self, aggregate_name):
+        aggr = Aggr(self, aggregate_name)
+        if self.cluster_mode:
+            res = self._invoke_cmode_iterator('aggr-get-iter', query_el=aggr._get_query_element())
+        else:
+            res = self.invoke('aggr-list-info', aggregate=aggregate_name).child_get('aggregates').children_get()
+        if len(res) == 0:
+            raise OntapException('Aggregate %s does not exist.' % aggregate_name)
+        return aggr
+
+    def get_aggregates(self):
+        if self.cluster_mode:
+            return map(lambda el: Aggr(self, el.child_get_string('aggregate-name')), self._invoke_cmode_iterator('aggr-get-iter'))
+        else:
+            return map(lambda el: Aggr(self, el.child_get_string('name')), self.invoke('aggr-list-info').child_get('aggregates').children_get())
 
     def get_fs_status_msg(self):
         """Return a string containing the file system status message."""
@@ -118,7 +166,7 @@ class Filer(object):
 
         out = self.invoke('snmp-get', 'object-id', oid)
         return out.child_get_string('value')
-    
+
     def get_perf_object(self, objectname, read=[], instances=[]):
         """
         Return objectname's performance data in a dict tree.
@@ -178,7 +226,7 @@ class Filer(object):
                         # Must be a string...
                         perf_insts[inst_name][name] = c.child_get_string(
                             'value')
-                
+
             i = i + 1
 
         self.invoke('perf-object-get-instances-iter-end', 'tag', iter_tag)
@@ -194,7 +242,7 @@ class Filer(object):
         # Check cache:
         if self.perf_obj_info.has_key(objectname):
             return self.perf_obj_info[objectname]
-        
+
         out = self.invoke('perf-object-counter-list-info',
                           'objectname', objectname)
         counters = {}
@@ -248,8 +296,8 @@ class Filer(object):
         if self.has_share(name):
             return(Share(self, name))
         else:
-            return False   
-    
+            return False
+
     def get_shares(self):
         """Return a list of Share objects containing filer's CIFS exports."""
 
@@ -266,7 +314,7 @@ class Filer(object):
         share_pattern = re.compile(r'^([a-zA-Z].*\S)\s+\/')
 
         shares = []
-        
+
         for line in output[2:]:
             m = share_pattern.match(line)
             if m:
@@ -280,25 +328,109 @@ class Filer(object):
         out = self.invoke('options-get', 'name', name)
         return out.child_get_string('value')
 
-    def get_volume(self, name):
-        """Return FlexVol object of existing vol 'name'; else return False."""
+    def get_volume(self, name, vserver_name=None, vfiler_name=None):
+        """Return FlexVol object of existing vol 'name'; else return False.
+        Optionally filtered by vfiler or vserver name."""
 
-        if self.has_volume(name):
-            return(FlexVol(self, name))
+        if self.cluster_mode:
+            with self.vserver_context(vserver_name):
+                api_vol_attrib = NaElement("volume-attributes")
+                api_vol_attrib.child_add(NaElement("volume-id-attributes"))
+                api_vol_attrib.child_add(NaElement("volume-space-attributes"))
+                api_desired_attributes = NaElement("desired-attributes")
+                api_desired_attributes.child_add(api_vol_attrib)
+
+                vol_id_el = NaElement('volume-id-attributes')
+                vol_id_el.child_add(NaElement('name', name))
+                vol_attrs_el = NaElement('volume-attributes')
+                vol_attrs_el.child_add(vol_id_el)
+                query_el = NaElement('query')
+                query_el.child_add(vol_attrs_el)
+                res = self._invoke_cmode_iterator(
+                    'volume-get-iter',
+                    desired_attributes_el=api_desired_attributes,
+                    query_el=query_el)
+                if len(res):
+                    volume = res[0]
+                    name = volume.child_get('volume-id-attributes').child_get_string('name')
+                    size_used = volume.child_get('volume-space-attributes').child_get_int('size-used')
+                    size_available = volume.child_get('volume-space-attributes').child_get_int('size-available')
+                    size_total = volume.child_get('volume-space-attributes').child_get_int('size-total')
+                    return FlexVol(self, name, vserver_name=vserver_name, size_used=size_used, size_available=size_available, size_total=size_total)
         else:
-            return False
+            with self.vfiler_context(vfiler_name):
+                out = self.invoke('volume-list-info', volume=name)
+                res = out.child_get('volumes').children_get()
+                if len(res):
+                    volume = res[0]
+                    name = volume.child_get_string('name')
+                    vfiler = volume.child_get_string('owning-vfiler') or vfiler_name
+                    size_used = volume.child_get_int('size-used')
+                    size_available = volume.child_get_int('size-available')
+                    size_total = volume.child_get_int('size-total')
+                    return FlexVol(
+                        self, name, vfiler_name=vfiler,
+                        size_used=size_used,
+                        size_available=size_available,
+                        size_total=size_total)
+        return False
 
-    def get_volumes(self):
-        """Retun a list of FlexVol objects that exist on filer."""
+    def get_volumes(self, vserver_name=None, vfiler_name=None):
+        """Return a list of FlexVol objects that exist on filer.
+        Optionally filtered by vfiler or vserver name."""
 
         volumes = []
+        if self.cluster_mode:
+            with self.vserver_context(vserver_name):
+                api_vol_attrib = NaElement("volume-attributes")
+                api_vol_attrib.child_add(NaElement("volume-id-attributes"))
+                api_vol_attrib.child_add(NaElement("volume-space-attributes"))
+                api_desired_attributes = NaElement("desired-attributes")
+                api_desired_attributes.child_add(api_vol_attrib)
 
-        out = self.invoke('volume-list-info')
-        for volume in out.child_get('volumes').children_get():
-            name = volume.child_get_string('name')
-            volumes.append(FlexVol(self, name))
-
+                for volume in self._invoke_cmode_iterator('volume-get-iter', desired_attributes_el=api_desired_attributes):
+                    name = volume.child_get('volume-id-attributes').child_get_string('name')
+                    size_used = volume.child_get('volume-space-attributes').child_get_int('size-used')
+                    size_available = volume.child_get('volume-space-attributes').child_get_int('size-available')
+                    size_total = volume.child_get('volume-space-attributes').child_get_int('size-total')
+                    volumes.append(FlexVol(self, name, vserver_name=vserver_name, size_used=size_used, size_available=size_available, size_total=size_total))
+        else:
+            out = self.invoke('volume-list-info')
+            for volume in out.child_get('volumes').children_get():
+                name = volume.child_get_string('name')
+                vfiler = volume.child_get_string('owning-vfiler')
+                size_used = volume.child_get_int('size-used')
+                size_available = volume.child_get_int('size-available')
+                size_total = volume.child_get_int('size-total')
+                if vfiler_name is None or vfiler_name == vfiler:
+                    volumes.append(FlexVol(self, name, vfiler_name=vfiler, size_used=size_used, size_available=size_available, size_total=size_total))
         return volumes
+
+    def get_vfilers(self):
+        """Return a list of vfilers that exist on filer."""
+        if self.cluster_mode:
+            raise OntapException('Vfilers are supported only for 7-mode.')
+        vfilers = []
+        out = self.invoke('vfiler-list-info')
+        for vfiler in out.child_get('vfilers').children_get():
+            name = vfiler.child_get_string('name')
+            vfilers.append(name)
+
+        return vfilers
+
+    def get_vservers(self):
+        """Return a list of vservers that exist on filer/cluster."""
+        if not self.cluster_mode:
+            raise OntapException('Vfilers are supported only for c-mode.')
+        vservers = self._invoke_cmode_iterator('vserver-get-iter')
+        return map(lambda el: el.child_get_string('vserver-name'), vservers)
+
+    def get_qos_groups(self):
+        """Return a list of qos groups that exist on filer/cluster."""
+        if not self.cluster_mode:
+            raise OntapException('Vfilers are supported only for c-mode.')
+        qos_groups = self._invoke_cmode_iterator('qos-policy-group-get-iter')
+        return map(lambda el: el.child_get_string('policy-group'), qos_groups)
 
     def has_export(self, path):
         """Check if filer has NFS export name; return boolean."""
@@ -314,7 +446,7 @@ class Filer(object):
 
     def has_volume(self, name):
         """Check if filer has FlexVol name; return boolean."""
-        
+
         try:
             if self.cluster_mode:
                 vol_id_el = NaElement('volume-id-attributes')
@@ -323,10 +455,17 @@ class Filer(object):
                 vol_attrs_el.child_add(vol_id_el)
                 query_el = NaElement('query')
                 query_el.child_add(vol_attrs_el)
+
+                api_vol_attrib = NaElement("volume-attributes")
+                api_vol_attrib.child_add(NaElement("volume-id-attributes"))
+                api_desired_attributes = NaElement("desired-attributes")
+                api_desired_attributes.child_add(api_vol_attrib)
+
                 api = NaElement('volume-get-iter')
                 api.child_add(query_el)
+                api.child_add(api_desired_attributes)
                 xo = self.invoke_elem(api)
-                if int(xo.child_get_string('num-records')) == 0:
+                if xo.child_get_int('num-records') == 0:
                     return False
             else:
                 self.invoke('volume-list-info', 'volume', name)
@@ -337,8 +476,59 @@ class Filer(object):
                 raise
         return True
 
+    def _invoke_7mode_iterator(self, start_api_name, next_api_name, end_api_name, record_container_tag_name, maximum=100):
+        """Invoke a 7-mode iterator-style getter API."""
+        data = []
 
-    def invoke(self, *args):
+        start_api = NaElement(start_api_name)
+        start_result = self.invoke_elem(start_api)
+        tag = start_result.child_get_string('tag')
+        if not tag:
+            return data
+        try:
+            while True:
+                next_api = NaElement(next_api_name)
+                next_api.child_add(NaElement('tag', tag))
+                next_api.child_add(NaElement('maximum', six.text_type(maximum)))
+                next_result = self.invoke_elem(next_api)
+                records = next_result.child_get_int('records') or 0
+                if int(records) == 0:
+                    break
+
+                record_container = next_result.child_get(record_container_tag_name) or NaElement('none')
+                data.extend(record_container.children_get())
+        finally:
+            end_api = NaElement(end_api_name)
+            end_api.child_add(NaElement('tag', tag))
+            self.invoke_elem(end_api)
+
+        return data
+
+    def _invoke_cmode_iterator(self, api_name, query_el=None, desired_attributes_el=None, maximum=100):
+            data = []
+            tag = None
+            while True:
+                api = NaElement(api_name)
+                if tag is not None:
+                    api.child_add_string('tag', tag)
+                api.child_add_string('max-records', maximum)
+                if query_el is not None:
+                    api.child_add(query_el)
+                if desired_attributes_el is not None:
+                    api.child_add(desired_attributes_el)
+                xo = self.invoke_elem(api)
+                if xo.results_status() == 'failed':
+                    raise OntapException(xo.results_reason())
+                if xo.child_get_int('num-records'):
+                    data.extend(xo.child_get('attributes-list').children_get())
+                tag = xo.child_get_string('next-tag')
+                if tag is None:
+                    break
+                tag = escape(tag)
+            return data
+
+    def invoke(self, *args, **kwargs):
+        args += reduce(operator.add, kwargs.iteritems(), ())
         out = self.api.invoke(*args)
         if out.results_status() == 'failed':
             raise OntapApiException(out.results_errno(), out.results_reason())
@@ -424,39 +614,39 @@ class Filer(object):
         """
         Convert NaElement tree recursively to dict
         """
-        
+
         result = {}
-        
+
         if out.has_children():
             for child in out.children_get():
                 result.update(self._natree_to_dict(child))
-                
+
             result = {out.element['name']: result}
         else:
             result[out.element['name']] = out.element['content']
 
         return result
-    
+
     def rdfile(self, filename):
         """
         Read a file
         """
-        
+
         out = self.invoke_cli('rdfile', filename)
         return out.child_get_string('cli-output')
-    
+
     def wrfile(self, filename, line, append = True):
         """
         Write a line to file
         """
-        
+
         if append:
             out = self.invoke_cli('wrfile', '-a', filename, line)
         else:
             out = self.invoke_cli('wrfile', filename, line)
-            
+
         return out.child_get_string('cli-output')
-    
+
     def get_quota_entries(self, volume_name = None):
         result = {}
         # get quota entries
@@ -467,12 +657,12 @@ class Filer(object):
                 for entry in quotaEntries.children_get():
                     quota = self._natree_to_dict(entry)
                     quota = quota['quota-entry']
-        
+
                     if not volume_name or quota['volume'] == volume_name:
                         result[quota['quota-target']] = quota
 
         return result
-        
+
     def get_quota_status(self, volume_name = None):
         result = {}
         # get quota entries
@@ -485,31 +675,31 @@ class Filer(object):
                                           'qtree', quotaEntry['qtree'],
                                           'quota-type', quotaEntry['quota-type'],
                                           'volume', quotaEntry['volume'])
-                
+
                 quota = self._natree_to_dict(quotas)
                 quotaEntry.update(quota)
-            
+
                 result[target] = quotaEntry
-            
+
         return result
-                                                                                        
+
     def get_quota_report(self, volume_name = None):
         result = {}
-        
+
         if volume_name:
             volumes = [self.get_volume(volume_name)]
         else:
             volumes = self.get_volumes()
-            
+
         for volume in volumes:
             result.update(volume.get_quota_report())
-                
+
         return result
-    
+
     def get_sis_state(self):
         out = self.invoke_cli('sis','status')
         return out.child_get_string('cli-output')
-                                                                                        
+
     def get_qtree_stats(self, volume_name = None):
         if None == volume_name:
             out = self.invoke_cli('qtree','stats')
@@ -523,8 +713,8 @@ class Filer(object):
         else:
             out = self.invoke_cli('sysstat', flag, '-c', count, interval)
         return out.child_get_string('cli-output')
-                                                                                        
-    
+
+
 class Aggr(object):
     """An aggregate on a NetApp filer."""
 
@@ -532,48 +722,99 @@ class Aggr(object):
         self.filer = filer
         self.name = name
 
+    def _get_query_element(self):
+        """Returns query element for this aggregate (usage in c-mode iterators)."""
+        aggr_attrs_el = NaElement('aggr-attributes')
+        aggr_attrs_el.child_add(NaElement('aggregate-name', self.name))
+        query_el = NaElement('query')
+        query_el.child_add(aggr_attrs_el)
+        return query_el
+
     def get_space(self):
 
-        out = self.filer.invoke('aggr-list-info', 'aggregate', self.name)
-        space_info = out.child_get('aggregates').child_get('aggr-info').child_get('aggregate-space-details').child_get('aggregate-space-info').child_get('aggregate-space').child_get('fs-space-info')
+        if self.filer.cluster_mode:
+            space_info = self.filer._invoke_cmode_iterator('aggr-get-iter', self._get_query_element())[0]
+            return self.parse_space_info_cmode(space_info)
+        else:
+            out = self.filer.invoke('aggr-list-info', 'aggregate', self.name)
+            space_info = out.child_get('aggregates').child_get('aggr-info').child_get('aggregate-space-details').child_get('aggregate-space-info').child_get('aggregate-space').child_get('fs-space-info')
 
-        return self.parse_space_info(space_info)
+            return self.parse_space_info_7mode(space_info)
 
-    def parse_space_info(self, space_info):
-        """Parse ONTAP fs-space-info, return dict with contents."""
+    def parse_space_info_7mode(self, space_info):
+        """Parse ONTAP fs-space-info, return dict with contents (7-mode)."""
 
         info = {}
-        info['fs-size-total'] = space_info.child_get_int('fs-size-total')
-        info['fs-size-used'] = space_info.child_get_int('fs-size-used')
-        info['fs-size-available'] = space_info.child_get_int(
+        info['size-total'] = space_info.child_get_int('fs-size-total')
+        info['size-used'] = space_info.child_get_int('fs-size-used')
+        info['size-available'] = space_info.child_get_int(
             'fs-size-available')
-        info['fs-percent-used-capacity'] = space_info.child_get_int(
+        info['percent-used-capacity'] = space_info.child_get_int(
             'fs-percent-used-capacity')
-        info['fs-files-total'] = space_info.child_get_int('fs-files-total')
-        info['fs-files-used'] = space_info.child_get_int('fs-files-used')
-        info['fs-percent-inode-used-capacity'] = space_info.child_get_int(
+        info['files-total'] = space_info.child_get_int('fs-files-total')
+        info['files-used'] = space_info.child_get_int('fs-files-used')
+        info['percent-inode-used-capacity'] = space_info.child_get_int(
             'fs-percent-inode-used-capacity')
-        info['fs-maxfiles-available'] = space_info.child_get_int(
+        info['maxfiles-available'] = space_info.child_get_int(
             'fs-maxfiles-available')
-        info['fs-maxfiles-used'] = space_info.child_get_int(
+        info['maxfiles-used'] = space_info.child_get_int(
             'fs-maxfiles-used')
-        info['fs-maxfiles-possible'] = space_info.child_get_int(
+        info['maxfiles-possible'] = space_info.child_get_int(
             'fs-maxfiles-possible')
-        info['fs-files-private-used'] = space_info.child_get_int(
+        info['files-private-used'] = space_info.child_get_int(
             'fs-files-private-used')
-        info['fs-inodefile-public-capacity'] = space_info.child_get_int(
+        info['inodefile-public-capacity'] = space_info.child_get_int(
             'fs-inodefile-public-capacity')
-        info['fs-inodefile-private-capacity'] = space_info.child_get_int(
+        info['inodefile-private-capacity'] = space_info.child_get_int(
             'fs-inodefile-private-capacity')
-        info['fs-sis-percent-saved'] = space_info.child_get_int(
+        info['sis-percent-saved'] = space_info.child_get_int(
             'fs-sis-percent-saved')
-        info['fs-sis-shared-space'] = space_info.child_get_int(
+        info['sis-shared-space'] = space_info.child_get_int(
             'fs-sis-shared-space')
-        info['fs-sis-saved-space'] = space_info.child_get_int(
+        info['sis-saved-space'] = space_info.child_get_int(
             'fs-sis-saved-space')
 
         return info
-        
+
+    def parse_space_info_cmode(self, space_info):
+        """Parse ONTAP aggregate-attributes, return dict with contents
+        (c-mode version, without SIS items)."""
+
+        info = {}
+        info['size-total'] = space_info.child_get(
+            'aggr-space-attributes').child_get_int('size-total')
+        info['size-used'] = space_info.child_get(
+            'aggr-space-attributes').child_get_int('size-used')
+        info['size-available'] = space_info.child_get(
+            'aggr-space-attributes').child_get_int('size-available')
+        info['percent-used-capacity'] = space_info.child_get(
+            'aggr-space-attributes').child_get_int('percent-used-capacity')
+        info['files-total'] = space_info.child_get(
+            'aggr-inode-attributes').child_get_int('files-total')
+        info['files-used'] = space_info.child_get(
+            'aggr-inode-attributes').child_get_int('files-used')
+        info['percent-inode-used-capacity'] = space_info.child_get(
+            'aggr-inode-attributes').child_get_int('percent-inode-used-capacity')
+        info['maxfiles-available'] = space_info.child_get(
+            'aggr-inode-attributes').child_get_int('maxfiles-available')
+        info['maxfiles-used'] = space_info.child_get(
+            'aggr-inode-attributes').child_get_int('maxfiles-used')
+        info['maxfiles-possible'] = space_info.child_get(
+            'aggr-inode-attributes').child_get_int('maxfiles-possible')
+        info['files-private-used'] = space_info.child_get(
+            'aggr-inode-attributes').child_get_int('files-private-used')
+        info['inodefile-public-capacity'] = space_info.child_get(
+            'aggr-inode-attributes').child_get_int('inodefile-public-capacity')
+        info['inodefile-private-capacity'] = space_info.child_get(
+            'aggr-inode-attributes').child_get_int('inodefile-private-capacity')
+        return info
+
+    def __str__(self):
+        return self.name
+
+    def __repr__(self):
+        return "<%s %s>" % (self.__class__.__name__, self.name)
+
 
 class Export(object):
     """An NFS export on a NetApp Filer."""
@@ -618,7 +859,7 @@ class Export(object):
         rule_info = NaElement('exports-rule-info')
         if None != anon:
             rule_info.child_add(NaElement('anon', anon))
-            
+
         rule_info.child_add(NaElement('nosuid', nosuid_val))
         rule_info.child_add(NaElement('pathname', self.path))
 
@@ -650,7 +891,7 @@ class Export(object):
         #
         # Construct NaElement tree:
         #
-        
+
         pathname_info = NaElement('pathname-info')
         pathname_info.child_add(NaElement('name', self.path))
 
@@ -735,8 +976,8 @@ class Export(object):
         return rules.child_get('sec-flavor').child_get(
             'sec-flavor-info').child_get_string('flavor')
 
-    def modify_rule(self, nosuid=True, root_hosts = [], ro_hosts = [],
-                    rw_hosts = [], sec_flavor = 'sys', anon = None):
+    def modify_rule(self, nosuid=True, root_hosts=[], ro_hosts=[],
+                    rw_hosts=[], sec_flavor='sys', anon=None):
         """
         Change the exportfs rule for an NFS share.
 
@@ -760,7 +1001,7 @@ class Export(object):
         #
 
         rule_info = NaElement('exports-rule-info')
-        
+
         if None != anon:
             rule_info.child_add(NaElement('anon', anon))
 
@@ -795,11 +1036,15 @@ class Export(object):
 
         If there is no 'exports-rule-info', return False.
         """
-
+        cache = getattr(self, '_rules_cache', None)
+        if cache is not None:
+            return cache
         out = self.filer.invoke('nfs-exportfs-list-rules',
                                 'pathname', self.path)
         try:
-            return out.child_get('rules').child_get('exports-rule-info')
+            rules = out.child_get('rules').child_get('exports-rule-info')
+            self._rules_cache = rules
+            return rules
         except AttributeError:
             return False
         else:
@@ -808,7 +1053,13 @@ class Export(object):
 class FlexVol(object):
     """A FlexVol on a NetApp Filer."""
 
-    def __init__(self, filer, name):
+    def __init__(self, filer, name, vfiler_name=None, vserver_name=None, size_used=None, size_total=None, size_available=None):
+        """Volume initialization.
+
+        - vfiler_name is used in 7mode for context switching if needed.
+        - vserver_name is used in c-mode for context switching if needed.
+        - size_<user|total|available> are used for caching data from volume-list-info API call.
+        """
         self.filer = filer
 
         m = re.match('^/vol/(.+)$', name)
@@ -817,39 +1068,83 @@ class FlexVol(object):
 
         self.name = name
         self.path = '/vol/' + name
-    
-    def create(self, aggr, size, *args):
-        self.filer.invoke('volume-create',
-                          'volume', self.name,
-                          'containing-aggr-name', aggr,
-                          'size', size, *args)
+        self.vfiler_name = vfiler_name
+        self.vserver_name = vserver_name
+        self.size_used = size_used
+        self.size_available = size_available
+        self.size_total = size_total
+
+    def use_context(self):
+        """Returns context manager for correct vserver / vfiler.
+        Useful for API calls which are same in 7-mode and c-mode.
+        """
+        if self.filer.cluster_mode:
+            return self.filer.vserver_context(self.vserver_name)
+        else:
+            return self.filer.vfiler_context(self.vfiler_name)
+
+    def _get_query_element(self):
+        """Returns query element for this volume (usage in c-mode iterators)."""
+        vol_id_el = NaElement('volume-id-attributes')
+        vol_id_el.child_add(NaElement('name', self.name))
+        vol_attrs_el = NaElement('volume-attributes')
+        vol_attrs_el.child_add(vol_id_el)
+        query_el = NaElement('query')
+        query_el.child_add(vol_attrs_el)
+        return query_el
+
+    def create(self, aggr, size, *args, **kwargs):
+        if self.filer.cluster_mode:
+            # in c-mode volumes must be created in vserver context
+            with self.use_context():
+                self.filer.invoke('volume-create',
+                                  'volume', self.name,
+                                  'containing-aggr-name', aggr,
+                                  'size', size, *args, **kwargs)
+        else:
+            # in 7-mode volumes must be created on filer
+            self.filer.invoke('volume-create',
+                              'volume', self.name,
+                              'containing-aggr-name', aggr,
+                              'size', size, *args, **kwargs)
 
     def delete(self):
-        self.filer.invoke('volume-destroy',
-                          'name', self.name)
+        with self.use_context():
+            self.filer.invoke('volume-destroy',
+                              'name', self.name)
 
     def offline(self):
-        self.filer.invoke('volume-offline',
-                          'name', self.name)
+        with self.use_context():
+            self.filer.invoke('volume-offline',
+                              'name', self.name)
 
     def online(self):
-        self.filer.invoke('volume-online',
-                          'name', self.name)
+        with self.use_context():
+            self.filer.invoke('volume-online',
+                              'name', self.name)
 
     def unmount(self):
-        self.filer.invoke('volume-unmount',
-                          'volume-name', self.name)
+        if self.filer.cluster_mode:
+            with self.use_context():
+                self.filer.invoke('volume-unmount',
+                                  'volume-name', self.name)
+        else:
+            raise OntapException('Unmounting is supported only for cluster mode.')
+
+    def set_vfiler(self, vfiler_name):
+        if not self.filer.cluster_mode:
+            self.filer.invoke('vfiler-add-storage', **{
+                'storage-path': self.path,
+                'vfiler': vfiler_name,
+            })
+            self.vfiler_name = vfiler_name
+        else:
+            raise OntapException('Setting vfiler is supported only for 7-mode.')
 
     def get_info(self):
         if self.filer.cluster_mode:
-            vol_id_el = NaElement('volume-id-attributes')
-            vol_id_el.child_add(NaElement('name', self.name))
-            vol_attrs_el = NaElement('volume-attributes')
-            vol_attrs_el.child_add(vol_id_el)
-            query_el = NaElement('query')
-            query_el.child_add(vol_attrs_el)
             api = NaElement('volume-get-iter')
-            api.child_add(query_el)
+            api.child_add(self._get_query_element())
             xo = self.filer.invoke_elem(api)
             return self.filer._natree_to_dict(xo.child_get('attributes-list'))['attributes-list']['volume-attributes']
         else:
@@ -874,7 +1169,7 @@ class FlexVol(object):
                 return False
             else:
                 raise
-            
+
         state = out.child_get('sis-object').child_get('dense-status').child_get_string('state') 
         if state == 'Enabled':
             return True
@@ -894,7 +1189,7 @@ class FlexVol(object):
         self.filer.invoke('snapvault-secondary-delete-snapshot-schedule',
                           'schedule-name', schedule_name,
                           'volume-name', self.name)
-        
+
     def get_autosize_increment(self):
         out = self.filer.invoke('volume-autosize-get', 'volume', self.name)
         return out.child_get_int('increment-size')
@@ -907,7 +1202,7 @@ class FlexVol(object):
         Value is returned as a string, suffixed with a 'g' to match Data
         ONTAP conventions.
         """
-        
+
         kb = self.get_autosize_increment()
         return str(int(round(kb / 1024. / 1024.))) + 'g'
 
@@ -925,7 +1220,29 @@ class FlexVol(object):
 
         kb = self.get_autosize_max_size()
         return str(int(round(kb / 1024. / 1024.))) + 'g'
-    
+
+    def get_container(self):
+        """Return the name of the containing aggregate."""
+        if self.filer.cluster_mode:
+            with self.filer.vserver_context(self.vserver_name):
+                api_vol_attrib = NaElement("volume-attributes")
+                api_vol_attrib.child_add(NaElement("volume-id-attributes"))
+                api_desired_attributes = NaElement("desired-attributes")
+                api_desired_attributes.child_add(api_vol_attrib)
+
+                api = NaElement('volume-get-iter')
+                api.child_add(self._get_query_element())
+                api.child_add(api_desired_attributes)
+                xo = self.filer.invoke_elem(api)
+                matching_volumes = xo.child_get('attributes-list').children_get()
+                if len(matching_volumes) != 1:
+                    raise OntapException('Volume %s does not exist.' % self.name)
+                vol = matching_volumes[0]
+                return vol.child_get('volume-id-attributes').child_get_string('containing-aggregate-name')
+        else:
+            out = self.filer.invoke('volume-container', 'volume', self.name)
+            return out.child_get_string('containing-aggregate')
+
     def get_df(self):
         """
         Return an array containing space used, available and total space.
@@ -935,13 +1252,36 @@ class FlexVol(object):
         any), similar to how 'df' works on the CLI.
         """
 
-        out = self.filer.invoke('volume-list-info', 'volume', self.name)
-        used = out.child_get('volumes').child_get(
-            'volume-info').child_get_int('size-used')
-        avail = out.child_get('volumes').child_get(
-            'volume-info').child_get_int('size-available')
-        total = out.child_get('volumes').child_get(
-            'volume-info').child_get_int('size-total')
+        if self.size_used and self.size_total and self.size_available:
+            return [self.size_used, self.size_available, self.size_total]
+        if self.filer.cluster_mode:
+            with self.filer.vserver_context(self.vserver_name):
+                api_vol_attrib = NaElement("volume-attributes")
+                api_vol_attrib.child_add(NaElement("volume-id-attributes"))
+                api_vol_attrib.child_add(NaElement("volume-space-attributes"))
+
+                api_desired_attributes = NaElement("desired-attributes")
+                api_desired_attributes.child_add(api_vol_attrib)
+
+                api = NaElement('volume-get-iter')
+                api.child_add(self._get_query_element())
+                api.child_add(api_desired_attributes)
+                xo = self.filer.invoke_elem(api)
+                matching_volumes = xo.child_get('attributes-list').children_get()
+                if len(matching_volumes) != 1:
+                    raise OntapException('Volume %s does not exist.' % self.name)
+                vol = matching_volumes[0]
+                used = vol.child_get('volume-space-attributes').child_get_int('size-used')
+                avail = vol.child_get('volume-space-attributes').child_get_int('size-available')
+                total = vol.child_get('volume-space-attributes').child_get_int('size-total')
+        else:
+            out = self.filer.invoke('volume-list-info', 'volume', self.name)
+            used = out.child_get('volumes').child_get(
+                'volume-info').child_get_int('size-used')
+            avail = out.child_get('volumes').child_get(
+                'volume-info').child_get_int('size-available')
+            total = out.child_get('volumes').child_get(
+                'volume-info').child_get_int('size-total')
         return([used, avail, total])
 
     def get_options(self):
@@ -950,9 +1290,9 @@ class FlexVol(object):
         Returns a dict comprised of the volume's options.  Note that the API
         returns options beyond what 'vol options' returns in the ONTAP
         CLI."""
-        
-        out = self.filer.invoke('volume-options-list-info',
-                                'volume', self.name)
+
+        with self.use_context():
+            out = self.filer.invoke('volume-options-list-info', volume=self.name)
 
         # option values that should be integers; the rest are strings:
         int_values = ('fractional_reserve', 'maxdirsize',
@@ -979,46 +1319,74 @@ class FlexVol(object):
 
     def get_qtrees(self):
         if self.filer.cluster_mode:
-            qtrees = []
+            # prepare query API element 
             qtree_info_el = NaElement('qtree-info')
             qtree_info_el.child_add(NaElement('volume', self.name))
             query_el = NaElement('query')
             query_el.child_add(qtree_info_el)
-            tag = None
-            while True:
-                api = NaElement('qtree-list-iter')
-                if tag is not None:
-                    api.child_add_string('tag', tag)
-                api.child_add_string('max-records', 10)
-                api.child_add(query_el)
-                xo = self.filer.invoke_elem(api)
-                if xo.results_status() == 'failed':
-                    raise OntapApiException(xo.results_reason())
-                for qtree in xo.child_get('attributes-list').children_get():
-                    qtree_name = qtree.child_get_string('qtree')
-                    if qtree_name: # to skip qtree None - the volume itself
-                        qtrees.append(Qtree(self.filer, self.name, qtree_name))
-                tag = xo.child_get_string('next-tag')
-                if tag is None:
-                    break
-                tag = escape(tag)
+            # prepare desired attributes API element 
+            api_desired_attributes = NaElement("desired-attributes")
+            api_desired_attributes.child_add(NaElement("qtree"))
+
+            qtrees = []
+            for el in self.filer._invoke_cmode_iterator('qtree-list-iter', query_el=query_el, desired_attributes_el=api_desired_attributes):
+                qtree_name = el.child_get_string('qtree')
+                if qtree_name: # to skip qtree None - the volume itself
+                    qtrees.append(Qtree(self.filer, self.name, qtree_name))
             return qtrees
         else:
-            raise NotImplementedError('API call qtree-list needs to be used for 7-mode. To be done.')
+            qtree_els = self.filer.invoke('qtree-list', volume=self.name).child_get('qtrees').children_get()
+            qtree_names = filter(None, map(lambda el: el.child_get_string('qtree'), qtree_els))
+            return map(lambda name: Qtree(self.filer, self.name, name), qtree_names)
 
     def create_qtree(self, qtree_name):
-        qt = Qtree(self.filer, self.name, qtree_name)
-        qt.create()
+        with self.use_context():
+            qt = Qtree(self.filer, self.name, qtree_name)
+            qt.create()
         return qt
 
+    def get_unix_permissions(self):
+        """Return unix permissions of the volume (c-mode)."""
+        if self.filer.cluster_mode:
+            # prepare desired attributes API element
+            api_vol_attrib = NaElement("volume-attributes")
+            api_vol_attrib.child_add(NaElement("volume-security-attributes"))
+            api_desired_attributes = NaElement("desired-attributes")
+            api_desired_attributes.child_add(api_vol_attrib)
+            volumes = self.filer._invoke_cmode_iterator('volume-get-iter', query_el=self._get_query_element(), desired_attributes_el=api_desired_attributes)
+            return volumes[0].child_get('volume-security-attributes').child_get('volume-security-unix-attributes').child_get_string('permissions')
+        else:
+            raise OntapException('Getting unix permission is implemented only for c-mode.')
+
     def get_security_style(self):
-        """Return the security stle (unix, ntfs, mixed) of the volume."""
+        """Return the security style (unix, ntfs, mixed) of the volume."""
 
-        out = self.filer.invoke('qtree-list', 'volume', self.name)
+        if self.filer.cluster_mode:
+            # prepare desired attributes API element
+            api_vol_attrib = NaElement("volume-attributes")
+            api_vol_attrib.child_add(NaElement("volume-security-attributes"))
+            api_desired_attributes = NaElement("desired-attributes")
+            api_desired_attributes.child_add(api_vol_attrib)
+            volumes = self.filer._invoke_cmode_iterator('volume-get-iter', query_el=self._get_query_element(), desired_attributes_el=api_desired_attributes)
+            return volumes[0].child_get('volume-security-attributes').child_get_string('style')
+        else:
+            out = self.filer.invoke('qtree-list', 'volume', self.name)
+            for qtree in out.child_get('qtrees').children_get():
+                if qtree.child_get_string('qtree') == '':
+                    return qtree.child_get_string('security-style')
 
-        for qtree in out.child_get('qtrees').children_get():
-            if qtree.child_get_string('qtree') == '':
-                return qtree.child_get_string('security-style')
+    def get_junction_path(self):
+        """Return junction path of the volume (c-mode)."""
+        if self.filer.cluster_mode:
+            # prepare desired attributes API element
+            api_vol_attrib = NaElement("volume-attributes")
+            api_vol_attrib.child_add(NaElement("volume-id-attributes"))
+            api_desired_attributes = NaElement("desired-attributes")
+            api_desired_attributes.child_add(api_vol_attrib)
+            volumes = self.filer._invoke_cmode_iterator('volume-get-iter', query_el=self._get_query_element(), desired_attributes_el=api_desired_attributes)
+            return volumes[0].child_get('volume-id-attributes').child_get_string('junction-path')
+        else:
+            raise OntapException('Getting junction path is implemented only for c-mode.')
 
     def get_sis_state(self):
         """Get deduplication state; return 'Enabled' or 'Disabled'."""
@@ -1029,32 +1397,34 @@ class FlexVol(object):
                 return 'Disabled'
             else:
                 raise
-            
+
         return out.child_get('sis-object').child_get('dense-status').child_get_string('state')
 
 
     def get_size(self):
-        out = self.filer.invoke('volume-size', 'volume', self.name)
-        return out.child_get_string('volume-size')
+        with self.use_context():
+            out = self.filer.invoke('volume-size', 'volume', self.name)
+            return out.child_get_string('volume-size')
 
     def get_snap_autodelete(self):
         """Equivalent to: 'snap autodelete <self.name> show'
 
         Returns a dict consisting of the snapshot autodelete options."""
 
-        out = self.filer.invoke('snapshot-autodelete-list-info',
-                                'volume', self.name)
+        with self.use_context():
+            out = self.filer.invoke('snapshot-autodelete-list-info',
+                                    'volume', self.name)
 
         # option values that should be integers; the rest are strings:
         int_values = ('target_free_space')
 
         return self.filer._xmltree_to_dict(out, int_values, key='option-name',
                                    value='option-value')
-
     def get_snap_reserve(self):
         """Equivalent to: snap reserve <self.name>"""
-        
-        out = self.filer.invoke('snapshot-get-reserve', 'volume', self.name)
+
+        with self.use_context():
+            out = self.filer.invoke('snapshot-get-reserve', 'volume', self.name)
         return out.child_get_int('percent-reserved')
 
     def get_snap_sched(self):
@@ -1199,7 +1569,7 @@ class FlexVol(object):
         't' to indicate KB, MB, GB or TB, respectively.  If there is no suffix,
         the values are treated as being in KB.
         """
-       
+
         api_params = {
             'volume': self.name,
         }
@@ -1215,33 +1585,60 @@ class FlexVol(object):
             api_params['shrink-threshold-percent'] = shrink_treshold_percent
         if mode:
             api_params['mode'] = mode
-         
-        self.filer.invoke('volume-autosize-set', *reduce(operator.add, api_params.iteritems()))
+
+        if self.filer.cluster_mode:
+            # for c-mode must be called in vserver context
+            with self.use_context():
+                self.filer.invoke('volume-autosize-set', **api_params)
+        else:
+            # for 7-mode must be called on filer
+            self.filer.invoke('volume-autosize-set', **api_params)
+
+    def get_autosize_state(self):
+        """Returns autosize options as dictionary with following values:
+
+        - mode <str>
+        - maximum-size <str>
+        - minimum-size <str>
+        - increment-size <str>
+        - is-enabled <str>
+        - shrink-threshold-percent <int>
+        - grow-threshold-percent <int>
+        """
+
+        with self.use_context():
+            out = self.filer.invoke('volume-autosize-get', volume=self.name)
+            string_opts = ('mode', 'maximum-size', 'minimum-size', 'increment-size', 'is-enabled')
+            int_opts = ('shrink-threshold-percent', 'grow-threshold-percent')
+            res = {}
+            for opt in string_opts:
+                res[opt] = out.child_get_string(opt)
+            for opt in int_opts:
+                res[opt] = out.child_get_int(opt)
+            return res
 
     def modify_qos_policy(self, group_name):
-        if self.filer.cluster_mode:
-            vol_id_el = NaElement('volume-id-attributes')
-            vol_id_el.child_add(NaElement('name', self.name))
-            vol_attrs_el = NaElement('volume-attributes')
-            vol_attrs_el.child_add(vol_id_el)
-            query_el = NaElement('query')
-            query_el.child_add(vol_attrs_el)
+        """Set qos policy group name (only c-mode)."""
 
-            vol_qos_el = NaElement('volume-qos-attributes')
-            vol_qos_el.child_add(NaElement('policy-group-name', group_name))
-            vol_attrs_set_el = NaElement('volume-attributes')
-            vol_attrs_set_el.child_add(vol_qos_el)
-            attributes_el = NaElement('attributes')
-            attributes_el.child_add(vol_attrs_set_el)
-            api = NaElement('volume-modify-iter')
-            api.child_add(query_el)
+        vol_qos_el = NaElement('volume-qos-attributes')
+        vol_qos_el.child_add(NaElement('policy-group-name', group_name))
+        vol_attrs_set_el = NaElement('volume-attributes')
+        vol_attrs_set_el.child_add(vol_qos_el)
+        attributes_el = NaElement('attributes')
+        self.modify(attributes_el)
+
+    def modify(self, attributes_el):
+        """General modify call for c-mode."""
+
+        if self.filer.cluster_mode:
+            api.child_add(self._get_query_element())
             api.child_add(attributes_el)
             xo = self.filer.invoke_elem(api)
             if xo.child_get_int('num-failed'):
                 error_dict = self.filer._natree_to_dict(xo.child_get('failure-list'))['failure-list']['volume-modify-iter-info']
                 raise OntapApiException(error_dict['error-code'], error_dict['error-message'])
         else:
-            raise NotImplementedError('API call volume-modify-iter is available only on c-mode.')
+            raise OntapException('API call volume-modify-iter is available only on c-mode.')
 
     def set_priority_cache_policy(self, policy):
         """CLI equivalent: 'priority set volume <self.name> cache=<policy>'"""
@@ -1249,12 +1646,14 @@ class FlexVol(object):
         self.filer.invoke('priority-set-volume',
                           'volume', self.name,
                           'cache-policy', policy)
-                           
+
     def set_option(self, option_name, value):
-        self.filer.invoke('volume-set-option',
-                          'option-name', option_name,
-                          'option-value', value,
-                          'volume', self.name)
+        with self.use_context():
+            self.filer.invoke('volume-set-option', **{
+                'option-name': option_name,
+                'option-value': value,
+                'volume': self.name,
+            })
 
     def set_security_style(self, style):
         self.filer.invoke_cli('qtree', 'security', self.path, style)
@@ -1283,7 +1682,7 @@ class FlexVol(object):
         the trailing unit character doesn't appear, then < number > is
         interpreted as the number of kilobytes desired.'
         """
-        
+
         self.filer.invoke('volume-size',
                           'new-size', size,
                           'volume', self.name)
@@ -1304,10 +1703,10 @@ class FlexVol(object):
 
     def set_snap_reserve(self, percent):
         """Equivalent to: snap reserve <self.name> <percent>"""
-
-        self.filer.invoke('snapshot-set-reserve',
-                          'volume', self.name,
-                          'percentage', percent)
+        with self.use_context():
+            self.filer.invoke('snapshot-set-reserve',
+                              'volume', self.name,
+                              'percentage', percent)
 
     def set_snap_sched(self, days=0, hours=0, minutes=0, weeks=0,
                        which_hours=' ', which_minutes=' '):
@@ -1325,7 +1724,8 @@ class FlexVol(object):
         which_minutes - Comma-separated string of the minutes at which the
                         minutely snapshots are created.
         """
-
+        if self.filer.cluster_mode:
+            raise OntapException('Scheduling snapshots is supported only for 7-mode.')
         self.filer.invoke('snapshot-set-schedule',
                           'days', days,
                           'hours', hours,
@@ -1354,7 +1754,7 @@ class FlexVol(object):
         spssi.child_add(NaElement('retention-count', int(retention_ct)))
         spssi.child_add(NaElement('schedule-name', sched))
         spssi.child_add(NaElement('volume-name', self.name))
-        
+
         sched_info = NaElement('snapvault-schedule-info')
         sched_info.child_add(NaElement('days-of-week', dow))
         sched_info.child_add(NaElement('hours-of_day', str(hod)))
@@ -1395,7 +1795,7 @@ class FlexVol(object):
         ssssi.child_add(NaElement('retention-count', int(retention_ct)))
         ssssi.child_add(NaElement('schedule-name', sched))
         ssssi.child_add(NaElement('volume-name', self.name))
-        
+
         sched_info = NaElement('snapvault-schedule-info')
         sched_info.child_add(NaElement('days-of-week', dow))
         sched_info.child_add(NaElement('hours-of_day', str(hod)))
@@ -1438,7 +1838,7 @@ class FlexVol(object):
 
         Can only be run on SnapVault primary.
         """
-        
+
         self.filer.invoke('snapvault-primary-initiate-snapshot-create',
                           'volume-name', self.name,
                            'schedule-name', schedule)
@@ -1449,19 +1849,19 @@ class FlexVol(object):
 
         Can only be run on SnapVault secondary.
         """
-        
+
         self.filer.invoke('snapvault-secondary-initiate-snapshot-create',
                           'volume-name', self.name,
                           'schedule-name', schedule)
-        
+
     def start_sis(self):
         self.filer.invoke('sis-start',
                           'path', '/vol/' + self.name)
-        
+
     def stop_sis(self):
         self.filer.invoke('sis-stop',
                           'path', '/vol/' + self.name)
-        
+
     def set_sis_schedule(self, schedule, enable_compression = False, enable_inline_compression = False):
         self.filer.invoke('sis-set-config',
                           'path', self.path,
@@ -1479,22 +1879,22 @@ class FlexVol(object):
             self.filer.invoke('quota-off', 'volume', self.name)
         else:
             raise OntapException('Unknown quota state.')
-        
+
     def get_quota_entries(self):
         return self.filer.get_quota_entries(self.name)
-        
+
     def get_quota_status(self):
         return self.filer.get_quota_status(self.name)
-    
+
     def get_quota_report(self):
         quotas = self.filer.invoke('quota-report',
                                   'volume', self.name).child_get('quotas')
 
         result = {}
-        
+
         if quotas.has_children():
             for quotaEntry in quotas.children_get():
-                
+
                 quota = self.filer._natree_to_dict(quotaEntry)
                 quota = quota['quota']
 
@@ -1512,7 +1912,7 @@ class FlexVol(object):
                             'quota-target', path,
                             'volume', self.name,
                             'qtree', None)
-        
+
     def read_file(self, filename, length = 4096, offset = 0):
         return self.filer.invoke('file-read-file',
                                  'path', '{0}/{1}'.format(self.path, filename.rstrip('/')),
@@ -1566,16 +1966,16 @@ class Qtree(object):
         self.volume = volume
         self.name = name
         self.path = '/vol/' + volume + '/' + name
-        
+
     def create(self):
         self.filer.invoke('qtree-create',
                           'volume', self.volume,
                           'qtree', self.name)
-        
+
     def delete(self):
         self.filer.invoke('qtree-delete',
                           'qtree', self.path)
-        
+
     def get_quota_report(self):
         return self.filer.invoke('quota-report',
                           'volume', self.path)
@@ -1583,11 +1983,11 @@ class Qtree(object):
     def resize_quota(self):
         self.filer.invoke('quota-resize',
                           'volume', self.volume)
-        
+
     """ invoke quota-add-entry, disk_limit, try persistent """
     def set_quota_size(self, size):
         report = self.filer.get_quota_entries(self.volume)
-        
+
         if not report or not report[self.path]:
             self.filer.invoke('quota-add-entry',
                                 'quota-type', 'tree',
@@ -1618,7 +2018,7 @@ class Qtree(object):
 
     def __repr__(self):
         return "<%s %s>" % (self.__class__.__name__, self.path)
-        
+
 
 class Share(object):
     """A CIFS share on a NetApp filer."""
@@ -1781,7 +2181,7 @@ class Share(object):
 
         The first two header lines are stripped.
         """
-        
+
         out = self.filer.invoke_cli('cifs', 'shares', self.name)
 
         output = out.child_get('cli-output').element['content'].splitlines()
@@ -1808,11 +2208,11 @@ class Share(object):
 class Vlan(object):
     """A Vlan on a NetApp filer."""
     def __init__(self, filer, interface, vlan_id, gvrp_enabled = False):
-        self.filer          = filer  
+        self.filer          = filer
         self.parent         = interface
-        self.interface      = interface + '-' + str(vlan_id)      
+        self.interface      = interface + '-' + str(vlan_id)
         self.vlan_id        = str(vlan_id)
-        self.gvrp_enabled   = gvrp_enabled 
+        self.gvrp_enabled   = gvrp_enabled
 
     def configured(self):
         """
@@ -1847,7 +2247,7 @@ class Vlan(object):
         nae = NaElement('net-vlan-delete')
         nae.child_add(info)
         self.filer.invoke_elem(nae)
-        
+
     def ifconfig_set(self, ip_address, netmask, ipspace_name = 'default-ipspace', persistent = True):
         address = NaElement('ip-address-info')
         #address.child_add(NaElement('addr-family', 'af-inet'))
@@ -1858,7 +2258,7 @@ class Vlan(object):
         primary = NaElement('v4-primary-address')
         primary.child_add(address)
 
-        info = NaElement('interface-config-info')   
+        info = NaElement('interface-config-info')
         info.child_add(NaElement('interface-name', self.interface))
         info.child_add(NaElement('ipspace-name',  ipspace_name))
         info.child_add(primary)
@@ -1866,7 +2266,7 @@ class Vlan(object):
         nae = NaElement('net-ifconfig-set')
         nae.child_add(info)
         self.filer.invoke_elem(nae)
-        
+
     def ifconfig_get(self):
         nae = NaElement('net-ifconfig-get')
         out = self.filer.invoke_elem(nae)
@@ -1874,7 +2274,7 @@ class Vlan(object):
             interface = config.child_get_string('interface-name')
             if interface == self.interface:
                 return self.filer._natree_to_dict(config)
-        
+
     def get_config(self):
         out = self.filer.invoke('net-config-get-active')
         vlans = out.child_get('net-config-info').child_get('vlans')
@@ -1882,4 +2282,4 @@ class Vlan(object):
             vlan_info = vlan.child_get('vlan-info')
             vlan_id   = vlan_info.child_get_string('vlanid')
             if vlan_id == self.vlan_id:
-                return self.filer._natree_to_dict(vlan_info) 
+                return self.filer._natree_to_dict(vlan_info)
