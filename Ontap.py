@@ -30,8 +30,8 @@ class OntapApiException(OntapException):
 class Filer(object):
     """A NetApp filer."""
 
-    def __init__(self, hostname, user, passwd, transport_type = 'HTTPS'):
-        self.api = NaServer(hostname, 1, 3)
+    def __init__(self, hostname, user, passwd, transport_type = 'HTTPS', major_version=1, minor_version=3):
+        self.api = NaServer(hostname, major_version, minor_version)
         self.api.set_style('LOGIN')
         self.api.set_admin_user(user, passwd)
         self.api.set_transport_type(transport_type)
@@ -498,9 +498,10 @@ class Filer(object):
                 record_container = next_result.child_get(record_container_tag_name) or NaElement('none')
                 data.extend(record_container.children_get())
         finally:
-            end_api = NaElement(end_api_name)
-            end_api.child_add(NaElement('tag', tag))
-            self.invoke_elem(end_api)
+            if end_api_name:
+                end_api = NaElement(end_api_name)
+                end_api.child_add(NaElement('tag', tag))
+                self.invoke_elem(end_api)
 
         return data
 
