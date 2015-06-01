@@ -3,6 +3,7 @@ import sys
 import operator
 from contextlib import contextmanager
 from xml.sax.saxutils import escape
+from ssl import SSLError
 
 import six
 
@@ -30,11 +31,12 @@ class OntapApiException(OntapException):
 class Filer(object):
     """A NetApp filer."""
 
-    def __init__(self, hostname, user, passwd, transport_type = 'HTTPS', major_version=1, minor_version=3):
+    def __init__(self, hostname, user, passwd, transport_type = 'HTTPS', major_version=1, minor_version=3, timeout=None):
         self.api = NaServer(hostname, major_version, minor_version)
         self.api.set_style('LOGIN')
         self.api.set_admin_user(user, passwd)
         self.api.set_transport_type(transport_type)
+        self.api.set_timeout(timeout)
         #self.api.set_debug_style('NA_PRINT_DONT_PARSE')
 
         self.name = hostname
@@ -530,7 +532,10 @@ class Filer(object):
 
     def invoke(self, *args, **kwargs):
         args += reduce(operator.add, kwargs.iteritems(), ())
-        out = self.api.invoke(*args)
+        try:
+            out = self.api.invoke(*args)
+        except SSLError as e:
+            raise OntapException('Error while connecting to %s: %s.' % (self.name, e.message))
         if out.results_status() == 'failed':
             raise OntapApiException(out.results_errno(), out.results_reason())
         return out
@@ -549,7 +554,10 @@ class Filer(object):
 
         cli = NaElement('system-cli')
         cli.child_add(args)
-        out = self.api.invoke_elem(cli)
+        try:
+            out = self.api.invoke_elem(cli)
+        except SSLError as e:
+            raise OntapException('Error while connecting to %s: %s.' % (self.name, e.message))
         if out.results_status() == 'failed':
             raise OntapApiException(out.results_errno(), out.results_reason())
         return out
@@ -557,7 +565,10 @@ class Filer(object):
     def invoke_elem(self, naelement):
         """Call the NetApp API using an NaElement."""
 
-        out = self.api.invoke_elem(naelement)
+        try:
+            out = self.api.invoke_elem(naelement)
+        except SSLError as e:
+            raise OntapException('Error while connecting to %s: %s.' % (self.name, e.message))
         if out.results_status() == 'failed':
             raise OntapApiException(out.results_errno(), out.results_reason())
         return out
