@@ -427,11 +427,17 @@ class Filer(object):
         vservers = self._invoke_cmode_iterator('vserver-get-iter')
         return map(lambda el: el.child_get_string('vserver-name'), vservers)
 
-    def get_qos_groups(self):
+    def get_qos_groups(self, vserver_name=None):
         """Return a list of qos groups that exist on filer/cluster."""
         if not self.cluster_mode:
             raise OntapException('Vfilers are supported only for c-mode.')
-        qos_groups = self._invoke_cmode_iterator('qos-policy-group-get-iter')
+        query_el = None
+        if vserver_name:
+            api_qos_policy_group_info = NaElement('qos-policy-group-info')
+            api_qos_policy_group_info.child_add(NaElement('vserver', vserver_name))
+            query_el = NaElement('query')
+            query_el.child_add(api_qos_policy_group_info)
+        qos_groups = self._invoke_cmode_iterator('qos-policy-group-get-iter', query_el=query_el)
         return map(lambda el: el.child_get_string('policy-group'), qos_groups)
 
     def has_export(self, path):
