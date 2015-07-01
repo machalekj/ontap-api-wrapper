@@ -355,10 +355,18 @@ class Filer(object):
                 if len(res):
                     volume = res[0]
                     name = volume.child_get('volume-id-attributes').child_get_string('name')
+                    uuid = volume.child_get('volume-id-attributes').child_get_string('instance-uuid')
+                    aggr = Aggr(self, volume.child_get('volume-id-attributes').child_get_string('containing-aggregate-name'))
                     size_used = volume.child_get('volume-space-attributes').child_get_int('size-used')
                     size_available = volume.child_get('volume-space-attributes').child_get_int('size-available')
                     size_total = volume.child_get('volume-space-attributes').child_get_int('size-total')
-                    return FlexVol(self, name, vserver_name=vserver_name, size_used=size_used, size_available=size_available, size_total=size_total)
+                    return FlexVol(
+                        self, name, vserver_name=vserver_name,
+                        size_used=size_used,
+                        size_available=size_available,
+                        size_total=size_total,
+                        uuid=uuid,
+                        containing_aggregate=aggr)
         else:
             with self.vfiler_context(vfiler_name):
                 out = self.invoke('volume-list-info', volume=name)
@@ -366,6 +374,8 @@ class Filer(object):
                 if len(res):
                     volume = res[0]
                     name = volume.child_get_string('name')
+                    uuid = volume.child_get_string('uuid')
+                    aggr = Aggr(self, volume.child_get_string('containing-aggregate'))
                     vfiler = volume.child_get_string('owning-vfiler') or vfiler_name
                     size_used = volume.child_get_int('size-used')
                     size_available = volume.child_get_int('size-available')
@@ -374,7 +384,9 @@ class Filer(object):
                         self, name, vfiler_name=vfiler,
                         size_used=size_used,
                         size_available=size_available,
-                        size_total=size_total)
+                        size_total=size_total,
+                        uuid=uuid,
+                        containing_aggregate=aggr)
         return False
 
     def get_volumes(self, vserver_name=None, vfiler_name=None):
@@ -392,20 +404,24 @@ class Filer(object):
 
                 for volume in self._invoke_cmode_iterator('volume-get-iter', desired_attributes_el=api_desired_attributes):
                     name = volume.child_get('volume-id-attributes').child_get_string('name')
+                    uuid = volume.child_get('volume-id-attributes').child_get_string('instance-uuid')
+                    aggr = Aggr(self, volume.child_get('volume-id-attributes').child_get_string('containing-aggregate-name'))
                     size_used = volume.child_get('volume-space-attributes').child_get_int('size-used')
                     size_available = volume.child_get('volume-space-attributes').child_get_int('size-available')
                     size_total = volume.child_get('volume-space-attributes').child_get_int('size-total')
-                    volumes.append(FlexVol(self, name, vserver_name=vserver_name, size_used=size_used, size_available=size_available, size_total=size_total))
+                    volumes.append(FlexVol(self, name, vserver_name=vserver_name, size_used=size_used, size_available=size_available, size_total=size_total, uuid=uuid, containing_aggregate=aggr))
         else:
             out = self.invoke('volume-list-info')
             for volume in out.child_get('volumes').children_get():
                 name = volume.child_get_string('name')
+                uuid = volume.child_get_string('uuid')
+                aggr = Aggr(self, volume.child_get_string('containing-aggregate'))
                 vfiler = volume.child_get_string('owning-vfiler')
                 size_used = volume.child_get_int('size-used')
                 size_available = volume.child_get_int('size-available')
                 size_total = volume.child_get_int('size-total')
                 if vfiler_name is None or vfiler_name == vfiler:
-                    volumes.append(FlexVol(self, name, vfiler_name=vfiler, size_used=size_used, size_available=size_available, size_total=size_total))
+                    volumes.append(FlexVol(self, name, vfiler_name=vfiler, size_used=size_used, size_available=size_available, size_total=size_total, uuid=uuid, containing_aggregate=aggr))
         return volumes
 
     def get_vfilers(self):
@@ -1071,7 +1087,7 @@ class Export(object):
 class FlexVol(object):
     """A FlexVol on a NetApp Filer."""
 
-    def __init__(self, filer, name, vfiler_name=None, vserver_name=None, size_used=None, size_total=None, size_available=None):
+    def __init__(self, filer, name, vfiler_name=None, vserver_name=None, size_used=None, size_total=None, size_available=None, uuid=None, containing_aggregate=None):
         """Volume initialization.
 
         - vfiler_name is used in 7mode for context switching if needed.
@@ -1091,6 +1107,8 @@ class FlexVol(object):
         self.size_used = size_used
         self.size_available = size_available
         self.size_total = size_total
+        self.uuid = uuid
+        self.containing_aggregate = containing_aggregate
 
     def use_context(self):
         """Returns context manager for correct vserver / vfiler.
@@ -1125,6 +1143,11 @@ class FlexVol(object):
                               'volume', self.name,
                               'containing-aggr-name', aggr,
                               'size', size, *args, **kwargs)
+        # remember containing aggregate
+        self.containing_aggregate = Aggr(self.filer, aggr)
+        # to fill volume UUID we need to query for just created volume
+        vol = self.filer.get_volume(self.name, vfiler_name=self.vfiler_name, vserver_name=self.vserver_name)
+        self.uuid = vol.uuid
 
     def delete(self):
         with self.use_context():
