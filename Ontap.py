@@ -1143,6 +1143,8 @@ class FlexVol(object):
                               'volume', self.name,
                               'containing-aggr-name', aggr,
                               'size', size, *args, **kwargs)
+            # ...and moved to vfiler
+            self.set_vfiler(self.vfiler_name)
         # remember containing aggregate
         self.containing_aggregate = Aggr(self.filer, aggr)
         # to fill volume UUID we need to query for just created volume
