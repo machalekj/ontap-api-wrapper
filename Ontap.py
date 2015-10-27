@@ -357,9 +357,10 @@ class Filer(object):
                     name = volume.child_get('volume-id-attributes').child_get_string('name')
                     uuid = volume.child_get('volume-id-attributes').child_get_string('instance-uuid')
                     aggr = Aggr(self, volume.child_get('volume-id-attributes').child_get_string('containing-aggregate-name'))
-                    size_used = volume.child_get('volume-space-attributes').child_get_int('size-used')
-                    size_available = volume.child_get('volume-space-attributes').child_get_int('size-available')
-                    size_total = volume.child_get('volume-space-attributes').child_get_int('size-total')
+                    space_attrs = volume.child_get('volume-space-attributes')
+                    size_used = space_attrs.child_get_int('size-used') if space_attrs.child_get_string('size-used') is not None else None
+                    size_available = space_attrs.child_get_int('size-available') if space_attrs.child_get_string('size-available') is not None else None
+                    size_total = space_attrs.child_get_int('size-total') if space_attrs.child_get_string('size-total') is not None else None
                     return FlexVol(
                         self, name, vserver_name=vserver_name,
                         size_used=size_used,
@@ -1501,9 +1502,26 @@ class FlexVol(object):
     def get_state(self):
         """Return state of the volume (online, offline, restricted, etc.)."""
 
-        out = self.filer.invoke('volume-list-info', 'volume', self.name)
-        return out.child_get('volumes').child_get(
-            'volume-info').child_get_string('state')
+        if self.filer.cluster_mode:
+            with self.filer.vserver_context(self.vserver_name):
+                api_vol_attrib = NaElement("volume-attributes")
+                api_vol_attrib.child_add(NaElement("volume-state-attributes"))
+                api_desired_attributes = NaElement("desired-attributes")
+                api_desired_attributes.child_add(api_vol_attrib)
+
+                api = NaElement('volume-get-iter')
+                api.child_add(self._get_query_element())
+                api.child_add(api_desired_attributes)
+                xo = self.filer.invoke_elem(api)
+                matching_volumes = xo.child_get('attributes-list').children_get()
+                if len(matching_volumes) != 1:
+                    raise OntapException('Volume %s does not exist.' % self.name)
+                vol = matching_volumes[0]
+                return vol.child_get('volume-state-attributes').child_get_string('state')
+        else:
+            out = self.filer.invoke('volume-list-info', 'volume', self.name)
+            return out.child_get('volumes').child_get(
+                'volume-info').child_get_string('state')
 
     def get_sv_pri_snap_sched(self):
         """
