@@ -501,12 +501,12 @@ class Filer(object):
                 raise
         return True
 
-    def _invoke_7mode_iterator(self, start_api_name, next_api_name, end_api_name, record_container_tag_name, maximum=100):
+    def _invoke_7mode_iterator(self, start_api_name, next_api_name, end_api_name, record_container_tag_name, maximum=100, params=None):
         """Invoke a 7-mode iterator-style getter API."""
         data = []
-
-        start_api = NaElement(start_api_name)
-        start_result = self.invoke_elem(start_api)
+        if params is None:
+            params = {}
+        start_result = self.invoke(start_api_name, **params)
         tag = start_result.child_get_string('tag')
         if not tag:
             return data
