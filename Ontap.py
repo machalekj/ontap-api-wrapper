@@ -531,28 +531,32 @@ class Filer(object):
 
         return data
 
-    def _invoke_cmode_iterator(self, api_name, query_el=None, desired_attributes_el=None, maximum=100):
-            data = []
-            tag = None
-            while True:
-                api = NaElement(api_name)
-                if tag is not None:
-                    api.child_add_string('tag', tag)
-                api.child_add_string('max-records', maximum)
-                if query_el is not None:
-                    api.child_add(query_el)
-                if desired_attributes_el is not None:
-                    api.child_add(desired_attributes_el)
-                xo = self.invoke_elem(api)
-                if xo.results_status() == 'failed':
-                    raise OntapException(xo.results_reason())
-                if xo.child_get_int('num-records'):
-                    data.extend(xo.child_get('attributes-list').children_get())
-                tag = xo.child_get_string('next-tag')
-                if tag is None:
-                    break
-                tag = escape(tag)
-            return data
+    def _invoke_cmode_iterator(self, api_name, query_el=None, desired_attributes_el=None, maximum=100, params=None):
+        data = []
+        if params is None:
+            params = {}
+        tag = None
+        while True:
+            api = NaElement(api_name)
+            if tag is not None:
+                api.child_add_string('tag', tag)
+            api.child_add_string('max-records', maximum)
+            if query_el is not None:
+                api.child_add(query_el)
+            if desired_attributes_el is not None:
+                api.child_add(desired_attributes_el)
+            for k,v in params.iteritems():
+                api.child_add(NaElement(k, v))
+            xo = self.invoke_elem(api)
+            if xo.results_status() == 'failed':
+                raise OntapException(xo.results_reason())
+            if xo.child_get_int('num-records'):
+                data.extend(xo.child_get('attributes-list').children_get())
+            tag = xo.child_get_string('next-tag')
+            if tag is None:
+                break
+            tag = escape(tag)
+        return data
 
     def invoke(self, *args, **kwargs):
         args += reduce(operator.add, kwargs.iteritems(), ())
