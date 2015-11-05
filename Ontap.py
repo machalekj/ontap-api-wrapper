@@ -358,9 +358,9 @@ class Filer(object):
                     uuid = volume.child_get('volume-id-attributes').child_get_string('instance-uuid')
                     aggr = Aggr(self, volume.child_get('volume-id-attributes').child_get_string('containing-aggregate-name'))
                     space_attrs = volume.child_get('volume-space-attributes')
-                    size_used = space_attrs.child_get_int('size-used') if space_attrs.child_get_string('size-used') is not None else None
-                    size_available = space_attrs.child_get_int('size-available') if space_attrs.child_get_string('size-available') is not None else None
-                    size_total = space_attrs.child_get_int('size-total') if space_attrs.child_get_string('size-total') is not None else None
+                    size_used = space_attrs.child_get_int('size-used') if space_attrs.child_get_string('size-used') is not None else 0
+                    size_available = space_attrs.child_get_int('size-available') if space_attrs.child_get_string('size-available') is not None else 0
+                    size_total = space_attrs.child_get_int('size-total') if space_attrs.child_get_string('size-total') is not None else 0
                     return FlexVol(
                         self, name, vserver_name=vserver_name,
                         size_used=size_used,
@@ -407,9 +407,10 @@ class Filer(object):
                     name = volume.child_get('volume-id-attributes').child_get_string('name')
                     uuid = volume.child_get('volume-id-attributes').child_get_string('instance-uuid')
                     aggr = Aggr(self, volume.child_get('volume-id-attributes').child_get_string('containing-aggregate-name'))
-                    size_used = volume.child_get('volume-space-attributes').child_get_int('size-used')
-                    size_available = volume.child_get('volume-space-attributes').child_get_int('size-available')
-                    size_total = volume.child_get('volume-space-attributes').child_get_int('size-total')
+                    space_attrs = volume.child_get('volume-space-attributes')
+                    size_used = space_attrs.child_get_int('size-used') if space_attrs.child_get_string('size-used') is not None else 0
+                    size_available = space_attrs.child_get_int('size-available') if space_attrs.child_get_string('size-available') is not None else 0
+                    size_total = space_attrs.child_get_int('size-total') if space_attrs.child_get_string('size-total') is not None else 0
                     volumes.append(FlexVol(self, name, vserver_name=vserver_name, size_used=size_used, size_available=size_available, size_total=size_total, uuid=uuid, containing_aggregate=aggr))
         else:
             out = self.invoke('volume-list-info')
@@ -1315,9 +1316,10 @@ class FlexVol(object):
                 if len(matching_volumes) != 1:
                     raise OntapException('Volume %s does not exist.' % self.name)
                 vol = matching_volumes[0]
-                used = vol.child_get('volume-space-attributes').child_get_int('size-used')
-                avail = vol.child_get('volume-space-attributes').child_get_int('size-available')
-                total = vol.child_get('volume-space-attributes').child_get_int('size-total')
+                space_attrs = vol.child_get('volume-space-attributes')
+                used = space_attrs.child_get_int('size-used') if space_attrs.child_get_string('size-used') is not None else 0
+                avail = space_attrs.child_get_int('size-available') if space_attrs.child_get_string('size-available') is not None else 0
+                total = space_attrs.child_get_int('size-total') if space_attrs.child_get_string('size-total') is not None else 0
         else:
             out = self.filer.invoke('volume-list-info', 'volume', self.name)
             used = out.child_get('volumes').child_get(
