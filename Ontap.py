@@ -1203,12 +1203,12 @@ class FlexVol(object):
                     return self.filer._natree_to_dict(volume)['volume-info']
 
     def autosize_is_enabled(self):
-        out = self.filer.invoke('volume-autosize-get', 'volume', self.name)
+        with self.use_context():
+            out = self.filer.invoke('volume-autosize-get', 'volume', self.name)
         if out.child_get_string('is-enabled') == 'true':
             return True
         else:
             return False
-
 
     def sis_is_enabled(self):
         try:
@@ -1733,7 +1733,7 @@ class FlexVol(object):
         else:
             raise OntapException('Unknown sis state.')
 
-    def set_size(self, size):
+    def set_size(self, size, adjust_autosize=False):
         """
         Set a FlexVol's capacity according to argument size.
 
@@ -1748,11 +1748,27 @@ class FlexVol(object):
         'megabytes', 'gigabytes', and 'terabytes' (respectively). If
         the trailing unit character doesn't appear, then < number > is
         interpreted as the number of kilobytes desired.'
+        Parameter adjust_autosize will change minimum size when autosize is enabled on 7-mode.
+        Returns the size to which the volume was set.
         """
 
-        self.filer.invoke('volume-size',
-                          'new-size', size,
-                          'volume', self.name)
+        if self.filer.cluster_mode:
+            # in c-mode volumes must be resize in vserver context
+            with self.use_context():
+                out = self.filer.invoke('volume-size',
+                                  'new-size', size,
+                                  'volume', self.name)
+            new_size = out.child_get_string('volume-size')
+        else:
+            # in 7-mode volumes must be resized on filer
+            out = self.filer.invoke('volume-size',
+                              'new-size', size,
+                              'volume', self.name)
+            new_size = out.child_get_string('volume-size')
+            if adjust_autosize and self.autosize_is_enabled():
+                autosize_state = self.set_autosize_state(minimum_size=new_size)
+            # when autosize is enabled, minimum size should be adjusted to the same value
+        return new_size
 
     def set_snap_autodelete_option(self, option_name, value):
         """Equivalent to 'snap autodelete <self.name> <option_name> <value>'
