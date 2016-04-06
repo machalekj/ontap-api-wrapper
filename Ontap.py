@@ -1623,8 +1623,8 @@ class FlexVol(object):
                            increment_size=None,
                            minimum_size=None,
                            maximum_size=None,
-                           grow_treshold_percent=None,
-                           shrink_treshold_percent=None,
+                           grow_threshold_percent=None,
+                           shrink_threshold_percent=None,
                            mode=None):
         """
         Enable, disable or configure autosize for a FlexVol.
@@ -1633,8 +1633,8 @@ class FlexVol(object):
         increment_size -- Increment size for growing FlexVol (string)
         minimum_size -- Limit to which FlexVol will shrink (string)
         maximum_size -- Limit to which FlexVol will grow (string)
-        grow_treshold_percent -- Percentage of the FlexVol capacity at which autogrow is initiated (integer)
-        shrink_treshold_percent -- Percentage of the FlexVol capacity at which autoshrink is initiated (integer)
+        grow_threshold_percent -- Percentage of the FlexVol capacity at which autogrow is initiated (integer)
+        shrink_threshold_percent -- Percentage of the FlexVol capacity at which autoshrink is initiated (integer)
         mode -- FlexVol's autosize mode of operation ('grow', 'grow_shrink', 'off')
 
         increment_size and maximum_size may be suffixed with a 'k', 'm', 'g' or
@@ -1651,10 +1651,10 @@ class FlexVol(object):
             api_params['maximum-size'] = maximum_size
         if minimum_size:
             api_params['minimum-size'] = minimum_size
-        if grow_treshold_percent:
-            api_params['grow-threshold-percent'] = grow_treshold_percent
-        if shrink_treshold_percent:
-            api_params['shrink-threshold-percent'] = shrink_treshold_percent
+        if grow_threshold_percent:
+            api_params['grow-threshold-percent'] = grow_threshold_percent
+        if shrink_threshold_percent:
+            api_params['shrink-threshold-percent'] = shrink_threshold_percent
         if mode:
             api_params['mode'] = mode
 
