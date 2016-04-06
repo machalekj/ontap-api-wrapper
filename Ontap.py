@@ -1731,12 +1731,13 @@ class FlexVol(object):
         self.filer.invoke_cli('qtree', 'security', self.path, style)
 
     def set_sis_state(self, state):
-        if state == 'enabled' or state == 'Enabled':
-            self.filer.invoke('sis-enable', 'path', self.path)
-        elif state == 'disabled' or state == 'Disabled':
-            self.filer.invoke('sis-disable', 'path', self.path)
-        else:
-            raise OntapException('Unknown sis state.')
+        with self.use_context():
+            if state == 'enabled' or state == 'Enabled':
+                self.filer.invoke('sis-enable', 'path', self.path)
+            elif state == 'disabled' or state == 'Disabled':
+                self.filer.invoke('sis-disable', 'path', self.path)
+            else:
+                raise OntapException('Unknown sis state.')
 
     def set_size(self, size, adjust_autosize=False):
         """
@@ -1943,12 +1944,14 @@ class FlexVol(object):
                           'schedule-name', schedule)
 
     def start_sis(self):
-        self.filer.invoke('sis-start',
-                          'path', '/vol/' + self.name)
+        with self.use_context():
+            self.filer.invoke('sis-start',
+                              'path', '/vol/' + self.name)
 
     def stop_sis(self):
-        self.filer.invoke('sis-stop',
-                          'path', '/vol/' + self.name)
+        with self.use_context():
+            self.filer.invoke('sis-stop',
+                              'path', '/vol/' + self.name)
 
     def set_sis_schedule(self, schedule, enable_compression = False, enable_inline_compression = False):
         self.filer.invoke('sis-set-config',
