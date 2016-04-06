@@ -442,7 +442,12 @@ class Filer(object):
         """Return a list of vservers that exist on filer/cluster."""
         if not self.cluster_mode:
             raise OntapException('Vfilers are supported only for c-mode.')
-        vservers = self._invoke_cmode_iterator('vserver-get-iter')
+
+        api_vserver_info = NaElement("vserver-info")
+        api_vserver_info.child_add(NaElement("vserver-name"))
+        api_desired_attributes = NaElement("desired-attributes")
+        api_desired_attributes.child_add(api_vserver_info)
+        vservers = self._invoke_cmode_iterator('vserver-get-iter', desired_attributes_el=api_desired_attributes)
         return map(lambda el: el.child_get_string('vserver-name'), vservers)
 
     def get_qos_groups(self, vserver_name=None):
