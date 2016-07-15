@@ -1185,6 +1185,11 @@ class FlexVol(object):
         else:
             raise OntapException('Unmounting is supported only for cluster mode.')
 
+    def restrict(self):
+        with self.use_context():
+            self.filer.invoke('volume-restrict',
+                              'name', self.name)
+
     def set_vfiler(self, vfiler_name):
         if not self.filer.cluster_mode:
             self.filer.invoke('vfiler-add-storage', **{
