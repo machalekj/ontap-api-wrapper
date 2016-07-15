@@ -1190,6 +1190,14 @@ class FlexVol(object):
             self.filer.invoke('volume-restrict',
                               'name', self.name)
 
+    def rename(self, new_volume_name):
+        with self.use_context():
+            self.filer.invoke('volume-rename',
+                              'volume', self.name,
+                              'new-volume-name', new_volume_name)
+        self.name = new_volume_name
+        self.path = '/vol/' + new_volume_name
+
     def set_vfiler(self, vfiler_name):
         if not self.filer.cluster_mode:
             self.filer.invoke('vfiler-add-storage', **{
