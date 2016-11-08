@@ -339,6 +339,7 @@ class Filer(object):
                 api_vol_attrib = NaElement("volume-attributes")
                 api_vol_attrib.child_add(NaElement("volume-id-attributes"))
                 api_vol_attrib.child_add(NaElement("volume-space-attributes"))
+                api_vol_attrib.child_add(NaElement("volume-language-attributes"))
                 api_desired_attributes = NaElement("desired-attributes")
                 api_desired_attributes.child_add(api_vol_attrib)
 
@@ -361,13 +362,16 @@ class Filer(object):
                     size_used = space_attrs.child_get_int('size-used') if space_attrs.child_get_string('size-used') is not None else 0
                     size_available = space_attrs.child_get_int('size-available') if space_attrs.child_get_string('size-available') is not None else 0
                     size_total = space_attrs.child_get_int('size-total') if space_attrs.child_get_string('size-total') is not None else 0
+                    lang_attrs = volume.child_get('volume-language-attributes')
+                    language_code = lang_attrs.child_get_string('language-code')
                     return FlexVol(
                         self, name, vserver_name=vserver_name,
                         size_used=size_used,
                         size_available=size_available,
                         size_total=size_total,
                         uuid=uuid,
-                        containing_aggregate=aggr)
+                        containing_aggregate=aggr,
+                        language_code=language_code)
         else:
             with self.vfiler_context(vfiler_name):
                 out = self.invoke('volume-list-info', volume=name)
@@ -400,6 +404,7 @@ class Filer(object):
                 api_vol_attrib = NaElement("volume-attributes")
                 api_vol_attrib.child_add(NaElement("volume-id-attributes"))
                 api_vol_attrib.child_add(NaElement("volume-space-attributes"))
+                api_vol_attrib.child_add(NaElement("volume-language-attributes"))
                 api_desired_attributes = NaElement("desired-attributes")
                 api_desired_attributes.child_add(api_vol_attrib)
 
@@ -411,7 +416,9 @@ class Filer(object):
                     size_used = space_attrs.child_get_int('size-used') if space_attrs.child_get_string('size-used') is not None else 0
                     size_available = space_attrs.child_get_int('size-available') if space_attrs.child_get_string('size-available') is not None else 0
                     size_total = space_attrs.child_get_int('size-total') if space_attrs.child_get_string('size-total') is not None else 0
-                    volumes.append(FlexVol(self, name, vserver_name=vserver_name, size_used=size_used, size_available=size_available, size_total=size_total, uuid=uuid, containing_aggregate=aggr))
+                    lang_attrs = volume.child_get('volume-language-attributes')
+                    language_code = lang_attrs.child_get_string('language-code')
+                    volumes.append(FlexVol(self, name, vserver_name=vserver_name, size_used=size_used, size_available=size_available, size_total=size_total, uuid=uuid, containing_aggregate=aggr, language_code=language_code))
         else:
             out = self.invoke('volume-list-info')
             for volume in out.child_get('volumes').children_get():
@@ -1098,7 +1105,7 @@ class Export(object):
 class FlexVol(object):
     """A FlexVol on a NetApp Filer."""
 
-    def __init__(self, filer, name, vfiler_name=None, vserver_name=None, size_used=None, size_total=None, size_available=None, uuid=None, containing_aggregate=None):
+    def __init__(self, filer, name, vfiler_name=None, vserver_name=None, size_used=None, size_total=None, size_available=None, uuid=None, containing_aggregate=None, language_code=None):
         """Volume initialization.
 
         - vfiler_name is used in 7mode for context switching if needed.
@@ -1120,6 +1127,7 @@ class FlexVol(object):
         self.size_total = size_total
         self.uuid = uuid
         self.containing_aggregate = containing_aggregate
+        self.language_code = language_code
 
     def use_context(self):
         """Returns context manager for correct vserver / vfiler.
@@ -1309,6 +1317,31 @@ class FlexVol(object):
         else:
             out = self.filer.invoke('volume-container', 'volume', self.name)
             return out.child_get_string('containing-aggregate')
+
+    def get_language_code(self):
+        """Return volume language code (and keep it in cache)."""
+        if self.language_code:
+            return self.language_code
+        if self.filer.cluster_mode:
+            with self.filer.vserver_context(self.vserver_name):
+                api_vol_attrib = NaElement("volume-attributes")
+                api_vol_attrib.child_add(NaElement("volume-language-attributes"))
+                api_desired_attributes = NaElement("desired-attributes")
+                api_desired_attributes.child_add(api_vol_attrib)
+
+                api = NaElement('volume-get-iter')
+                api.child_add(self._get_query_element())
+                api.child_add(api_desired_attributes)
+                xo = self.filer.invoke_elem(api)
+                matching_volumes = xo.child_get('attributes-list').children_get()
+                if len(matching_volumes) != 1:
+                    raise OntapException('Volume %s does not exist.' % self.name)
+                vol = matching_volumes[0]
+                self.language_code = vol.child_get('volume-language-attributes').child_get_string('language-code')
+        else:
+            out = self.filer.invoke('volume-get-language', volume=self.name)
+            self.language_code = out.child_get_string('language-code')
+        return self.language_code
 
     def get_df(self):
         """
