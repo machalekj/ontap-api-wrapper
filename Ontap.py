@@ -134,11 +134,13 @@ class Filer(object):
 
         exports = []
 
-        for rules in out.child_get('rules').children_get():
-            path = rules.child_get_string('pathname')
-            exp_obj = Export(self, path)
-            exp_obj._rules_cache = rules
-            exports.append(exp_obj)
+        export_rules = out.child_get('rules')
+        if export_rules:
+            for rules in export_rules.children_get():
+                path = rules.child_get_string('pathname')
+                exp_obj = Export(self, path)
+                exp_obj._rules_cache = rules
+                exports.append(exp_obj)
 
         return exports
 
