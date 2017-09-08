@@ -370,7 +370,7 @@ class Filer(object):
                         size_available = None
                         size_total = None
                     lang_attrs = volume.child_get('volume-language-attributes')
-                    language_code = lang_attrs.child_get_string('language-code')
+                    language_code = lang_attrs.child_get_string('language-code') if lang_attrs is not None else None
                     return FlexVol(
                         self, name, vserver_name=vserver_name,
                         size_used=size_used,
