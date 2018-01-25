@@ -1498,16 +1498,33 @@ class FlexVol(object):
 
     def get_sis_state(self):
         """Get deduplication state; return 'Enabled' or 'Disabled'."""
-        try:
-            out = self.filer.invoke('sis-status', 'path', self.path)
-        except OntapApiException as e:
-            if e.errno == '13001':
-                return 'Disabled'
-            else:
-                raise
+        if self.filer.cluster_mode:
+            with self.use_context():
+                api_vol_attrib = NaElement("volume-attributes")
+                api_vol_attrib.child_add(NaElement("volume-sis-attributes"))
+                api_desired_attributes = NaElement("desired-attributes")
+                api_desired_attributes.child_add(api_vol_attrib)
 
-        return out.child_get('sis-object').child_get('dense-status').child_get_string('state')
-
+                api = NaElement('volume-get-iter')
+                api.child_add(self._get_query_element())
+                api.child_add(api_desired_attributes)
+                xo = self.filer.invoke_elem(api)
+                matching_volumes = xo.child_get('attributes-list').children_get()
+                if len(matching_volumes) != 1:
+                    raise OntapException('Volume %s does not exist.' % self.name)
+                vol = matching_volumes[0]
+                sis_attrs = vol.child_get('volume-sis-attributes')
+                sis_enabled = sis_attrs.child_get_string('is-sis-state-enabled').lower() == 'true'
+                return 'Enabled' if sis_enabled else 'Disabled'
+        else:
+            try:
+                out = self.filer.invoke('sis-status', 'path', self.path)
+            except OntapApiException as e:
+                if e.errno == '13001':
+                    return 'Disabled'
+                else:
+                    raise
+            return out.child_get('sis-object').child_get('dense-status').child_get_string('state')
 
     def get_size(self):
         with self.use_context():
