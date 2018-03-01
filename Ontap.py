@@ -389,9 +389,9 @@ class Filer(object):
                     uuid = volume.child_get_string('uuid')
                     aggr = Aggr(self, volume.child_get_string('containing-aggregate'))
                     vfiler = volume.child_get_string('owning-vfiler') or vfiler_name
-                    size_used = volume.child_get_int('size-used')
-                    size_available = volume.child_get_int('size-available')
-                    size_total = volume.child_get_int('size-total')
+                    size_used = volume.child_get_int('size-used') if volume.child_get_string('size-used') is not None else 0
+                    size_available = volume.child_get_int('size-available') if volume.child_get_string('size-available') is not None else 0
+                    size_total = volume.child_get_int('size-total') if volume.child_get_string('size-total') is not None else 0
                     return FlexVol(
                         self, name, vfiler_name=vfiler,
                         size_used=size_used,
@@ -433,9 +433,9 @@ class Filer(object):
                 uuid = volume.child_get_string('uuid')
                 aggr = Aggr(self, volume.child_get_string('containing-aggregate'))
                 vfiler = volume.child_get_string('owning-vfiler')
-                size_used = volume.child_get_int('size-used')
-                size_available = volume.child_get_int('size-available')
-                size_total = volume.child_get_int('size-total')
+                size_used = volume.child_get_int('size-used') if volume.child_get_string('size-used') is not None else 0
+                size_available = volume.child_get_int('size-available') if volume.child_get_string('size-available') is not None else 0
+                size_total = volume.child_get_int('size-total') if volume.child_get_string('size-total') is not None else 0
                 if vfiler_name is None or vfiler_name == vfiler:
                     volumes.append(FlexVol(self, name, vfiler_name=vfiler, size_used=size_used, size_available=size_available, size_total=size_total, uuid=uuid, containing_aggregate=aggr))
         return volumes
@@ -1384,12 +1384,12 @@ class FlexVol(object):
                 total = space_attrs.child_get_int('size-total') if space_attrs.child_get_string('size-total') is not None else 0
         else:
             out = self.filer.invoke('volume-list-info', 'volume', self.name)
-            used = out.child_get('volumes').child_get(
-                'volume-info').child_get_int('size-used')
-            avail = out.child_get('volumes').child_get(
-                'volume-info').child_get_int('size-available')
-            total = out.child_get('volumes').child_get(
-                'volume-info').child_get_int('size-total')
+            vol_info = out.child_get('volumes').child_get('volume-info')
+            used = vol_info.child_get_int('size-used') if vol_info.child_get_string('size-used') is not None else 0
+
+            avail = vol_info.child_get_int('size-available') if vol_info.child_get_string('size-available') is not None else 0
+
+            total = vol_info.child_get_int('size-total') if vol_info.child_get_string('size-total') is not None else 0
         return([used, avail, total])
 
     def get_options(self):
