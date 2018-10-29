@@ -1361,8 +1361,8 @@ class FlexVol(object):
 
         if self.size_used and self.size_total and self.size_available:
             return [self.size_used, self.size_available, self.size_total]
-        if self.filer.cluster_mode:
-            with self.filer.vserver_context(self.vserver_name):
+        with self.use_context():
+            if self.filer.cluster_mode:
                 api_vol_attrib = NaElement("volume-attributes")
                 api_vol_attrib.child_add(NaElement("volume-id-attributes"))
                 api_vol_attrib.child_add(NaElement("volume-space-attributes"))
@@ -1382,15 +1382,15 @@ class FlexVol(object):
                 used = space_attrs.child_get_int('size-used') if space_attrs.child_get_string('size-used') is not None else 0
                 avail = space_attrs.child_get_int('size-available') if space_attrs.child_get_string('size-available') is not None else 0
                 total = space_attrs.child_get_int('size-total') if space_attrs.child_get_string('size-total') is not None else 0
-        else:
-            out = self.filer.invoke('volume-list-info', 'volume', self.name)
-            vol_info = out.child_get('volumes').child_get('volume-info')
-            used = vol_info.child_get_int('size-used') if vol_info.child_get_string('size-used') is not None else 0
+            else:
+                out = self.filer.invoke('volume-list-info', 'volume', self.name)
+                vol_info = out.child_get('volumes').child_get('volume-info')
+                used = vol_info.child_get_int('size-used') if vol_info.child_get_string('size-used') is not None else 0
 
-            avail = vol_info.child_get_int('size-available') if vol_info.child_get_string('size-available') is not None else 0
+                avail = vol_info.child_get_int('size-available') if vol_info.child_get_string('size-available') is not None else 0
 
-            total = vol_info.child_get_int('size-total') if vol_info.child_get_string('size-total') is not None else 0
-        return([used, avail, total])
+                total = vol_info.child_get_int('size-total') if vol_info.child_get_string('size-total') is not None else 0
+            return([used, avail, total])
 
     def get_options(self):
         """Equivalent to: vol options <self.name>
@@ -1426,26 +1426,27 @@ class FlexVol(object):
         return pri_vol.child_get_string('cache-policy')
 
     def get_qtrees(self):
-        if self.filer.cluster_mode:
-            # prepare query API element 
-            qtree_info_el = NaElement('qtree-info')
-            qtree_info_el.child_add(NaElement('volume', self.name))
-            query_el = NaElement('query')
-            query_el.child_add(qtree_info_el)
-            # prepare desired attributes API element 
-            api_desired_attributes = NaElement("desired-attributes")
-            api_desired_attributes.child_add(NaElement("qtree"))
+        with self.use_context():
+            if self.filer.cluster_mode:
+                # prepare query API element
+                qtree_info_el = NaElement('qtree-info')
+                qtree_info_el.child_add(NaElement('volume', self.name))
+                query_el = NaElement('query')
+                query_el.child_add(qtree_info_el)
+                # prepare desired attributes API element
+                api_desired_attributes = NaElement("desired-attributes")
+                api_desired_attributes.child_add(NaElement("qtree"))
 
-            qtrees = []
-            for el in self.filer._invoke_cmode_iterator('qtree-list-iter', query_el=query_el, desired_attributes_el=api_desired_attributes):
-                qtree_name = el.child_get_string('qtree')
-                if qtree_name: # to skip qtree None - the volume itself
-                    qtrees.append(Qtree(self.filer, self.name, qtree_name))
-            return qtrees
-        else:
-            qtree_els = self.filer.invoke('qtree-list', volume=self.name).child_get('qtrees').children_get()
-            qtree_names = filter(None, map(lambda el: el.child_get_string('qtree'), qtree_els))
-            return map(lambda name: Qtree(self.filer, self.name, name), qtree_names)
+                qtrees = []
+                for el in self.filer._invoke_cmode_iterator('qtree-list-iter', query_el=query_el, desired_attributes_el=api_desired_attributes):
+                    qtree_name = el.child_get_string('qtree')
+                    if qtree_name: # to skip qtree None - the volume itself
+                        qtrees.append(Qtree(self.filer, self.name, qtree_name))
+                return qtrees
+            else:
+                qtree_els = self.filer.invoke('qtree-list', volume=self.name).child_get('qtrees').children_get()
+                qtree_names = filter(None, map(lambda el: el.child_get_string('qtree'), qtree_els))
+                return map(lambda name: Qtree(self.filer, self.name, name), qtree_names)
 
     def create_qtree(self, qtree_name):
         with self.use_context():
@@ -1456,43 +1457,46 @@ class FlexVol(object):
     def get_unix_permissions(self):
         """Return unix permissions of the volume (c-mode)."""
         if self.filer.cluster_mode:
-            # prepare desired attributes API element
-            api_vol_attrib = NaElement("volume-attributes")
-            api_vol_attrib.child_add(NaElement("volume-security-attributes"))
-            api_desired_attributes = NaElement("desired-attributes")
-            api_desired_attributes.child_add(api_vol_attrib)
-            volumes = self.filer._invoke_cmode_iterator('volume-get-iter', query_el=self._get_query_element(), desired_attributes_el=api_desired_attributes)
-            return volumes[0].child_get('volume-security-attributes').child_get('volume-security-unix-attributes').child_get_string('permissions')
+            with self.use_context():
+                # prepare desired attributes API element
+                api_vol_attrib = NaElement("volume-attributes")
+                api_vol_attrib.child_add(NaElement("volume-security-attributes"))
+                api_desired_attributes = NaElement("desired-attributes")
+                api_desired_attributes.child_add(api_vol_attrib)
+                volumes = self.filer._invoke_cmode_iterator('volume-get-iter', query_el=self._get_query_element(), desired_attributes_el=api_desired_attributes)
+                return volumes[0].child_get('volume-security-attributes').child_get('volume-security-unix-attributes').child_get_string('permissions')
         else:
             raise OntapException('Getting unix permission is implemented only for c-mode.')
 
     def get_security_style(self):
         """Return the security style (unix, ntfs, mixed) of the volume."""
 
-        if self.filer.cluster_mode:
-            # prepare desired attributes API element
-            api_vol_attrib = NaElement("volume-attributes")
-            api_vol_attrib.child_add(NaElement("volume-security-attributes"))
-            api_desired_attributes = NaElement("desired-attributes")
-            api_desired_attributes.child_add(api_vol_attrib)
-            volumes = self.filer._invoke_cmode_iterator('volume-get-iter', query_el=self._get_query_element(), desired_attributes_el=api_desired_attributes)
-            return volumes[0].child_get('volume-security-attributes').child_get_string('style')
-        else:
-            out = self.filer.invoke('qtree-list', 'volume', self.name)
-            for qtree in out.child_get('qtrees').children_get():
-                if qtree.child_get_string('qtree') == '':
-                    return qtree.child_get_string('security-style')
+        with self.use_context():
+            if self.filer.cluster_mode:
+                # prepare desired attributes API element
+                api_vol_attrib = NaElement("volume-attributes")
+                api_vol_attrib.child_add(NaElement("volume-security-attributes"))
+                api_desired_attributes = NaElement("desired-attributes")
+                api_desired_attributes.child_add(api_vol_attrib)
+                volumes = self.filer._invoke_cmode_iterator('volume-get-iter', query_el=self._get_query_element(), desired_attributes_el=api_desired_attributes)
+                return volumes[0].child_get('volume-security-attributes').child_get_string('style')
+            else:
+                out = self.filer.invoke('qtree-list', 'volume', self.name)
+                for qtree in out.child_get('qtrees').children_get():
+                    if qtree.child_get_string('qtree') == '':
+                        return qtree.child_get_string('security-style')
 
     def get_junction_path(self):
         """Return junction path of the volume (c-mode)."""
         if self.filer.cluster_mode:
-            # prepare desired attributes API element
-            api_vol_attrib = NaElement("volume-attributes")
-            api_vol_attrib.child_add(NaElement("volume-id-attributes"))
-            api_desired_attributes = NaElement("desired-attributes")
-            api_desired_attributes.child_add(api_vol_attrib)
-            volumes = self.filer._invoke_cmode_iterator('volume-get-iter', query_el=self._get_query_element(), desired_attributes_el=api_desired_attributes)
-            return volumes[0].child_get('volume-id-attributes').child_get_string('junction-path')
+            with self.use_context():
+                # prepare desired attributes API element
+                api_vol_attrib = NaElement("volume-attributes")
+                api_vol_attrib.child_add(NaElement("volume-id-attributes"))
+                api_desired_attributes = NaElement("desired-attributes")
+                api_desired_attributes.child_add(api_vol_attrib)
+                volumes = self.filer._invoke_cmode_iterator('volume-get-iter', query_el=self._get_query_element(), desired_attributes_el=api_desired_attributes)
+                return volumes[0].child_get('volume-id-attributes').child_get_string('junction-path')
         else:
             raise OntapException('Getting junction path is implemented only for c-mode.')
 
@@ -1583,8 +1587,8 @@ class FlexVol(object):
     def get_state(self):
         """Return state of the volume (online, offline, restricted, etc.)."""
 
-        if self.filer.cluster_mode:
-            with self.filer.vserver_context(self.vserver_name):
+        with self.use_context():
+            if self.filer.cluster_mode:
                 api_vol_attrib = NaElement("volume-attributes")
                 api_vol_attrib.child_add(NaElement("volume-state-attributes"))
                 api_desired_attributes = NaElement("desired-attributes")
@@ -1599,10 +1603,10 @@ class FlexVol(object):
                     raise OntapException('Volume %s does not exist.' % self.name)
                 vol = matching_volumes[0]
                 return vol.child_get('volume-state-attributes').child_get_string('state')
-        else:
-            out = self.filer.invoke('volume-list-info', 'volume', self.name)
-            return out.child_get('volumes').child_get(
-                'volume-info').child_get_string('state')
+            else:
+                out = self.filer.invoke('volume-list-info', 'volume', self.name)
+                return out.child_get('volumes').child_get(
+                    'volume-info').child_get_string('state')
 
     def get_sv_pri_snap_sched(self):
         """
