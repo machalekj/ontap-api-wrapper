@@ -8,6 +8,7 @@ from xml.sax.saxutils import escape
 from ssl import SSLError
 
 import six
+from six.moves import reduce
 
 from netapp.NaElement import NaElement
 from netapp.NaServer import NaServer
@@ -160,9 +161,9 @@ class Filer(object):
 
     def get_aggregates(self):
         if self.cluster_mode:
-            return map(lambda el: Aggr(self, el.child_get_string('aggregate-name')), self._invoke_cmode_iterator('aggr-get-iter'))
+            return [Aggr(self, el.child_get_string('aggregate-name')) for el in self._invoke_cmode_iterator('aggr-get-iter')]
         else:
-            return map(lambda el: Aggr(self, el.child_get_string('name')), self.invoke('aggr-list-info').child_get('aggregates').children_get())
+            return [Aggr(self, el.child_get_string('name')) for el in self.invoke('aggr-list-info').child_get('aggregates').children_get()]
 
     def get_fs_status_msg(self):
         """Return a string containing the file system status message."""
@@ -248,7 +249,7 @@ class Filer(object):
         """
 
         # Check cache:
-        if self.perf_obj_info.has_key(objectname):
+        if objectname in self.perf_obj_info:
             return self.perf_obj_info[objectname]
 
         out = self.invoke('perf-object-counter-list-info',
@@ -466,7 +467,7 @@ class Filer(object):
         api_desired_attributes = NaElement("desired-attributes")
         api_desired_attributes.child_add(api_vserver_info)
         vservers = self._invoke_cmode_iterator('vserver-get-iter', desired_attributes_el=api_desired_attributes)
-        return map(lambda el: el.child_get_string('vserver-name'), vservers)
+        return [el.child_get_string('vserver-name') for el in vservers]
 
     def get_qos_groups(self, vserver_name=None):
         """Return a list of qos groups that exist on filer/cluster."""
@@ -479,7 +480,7 @@ class Filer(object):
             query_el = NaElement('query')
             query_el.child_add(api_qos_policy_group_info)
         qos_groups = self._invoke_cmode_iterator('qos-policy-group-get-iter', query_el=query_el)
-        return map(lambda el: el.child_get_string('policy-group'), qos_groups)
+        return [el.child_get_string('policy-group') for el in qos_groups]
 
     def has_export(self, path):
         """Check if filer has NFS export name; return boolean."""
@@ -568,7 +569,7 @@ class Filer(object):
                 api.child_add(query_el)
             if desired_attributes_el is not None:
                 api.child_add(desired_attributes_el)
-            for k,v in params.iteritems():
+            for k,v in six.iteritems(params):
                 api.child_add(NaElement(k, v))
             xo = self.invoke_elem(api)
             if xo.results_status() == 'failed':
@@ -582,7 +583,7 @@ class Filer(object):
         return data
 
     def invoke(self, *args, **kwargs):
-        args += reduce(operator.add, kwargs.iteritems(), ())
+        args += reduce(operator.add, six.iteritems(kwargs), ())
         try:
             out = self.api.invoke(*args)
         except SSLError as e:
@@ -731,7 +732,7 @@ class Filer(object):
         # get quota entries
         quotaEntries = self.get_quota_entries(volume_name)
         if quotaEntries:
-            for target, quotaEntry in quotaEntries.iteritems():
+            for target, quotaEntry in six.iteritems(quotaEntries):
                 # get actual quota
                 quotas = self.invoke('quota-get-entry',
                                           'quota-target', target,
@@ -1449,8 +1450,8 @@ class FlexVol(object):
                 return qtrees
             else:
                 qtree_els = self.filer.invoke('qtree-list', volume=self.name).child_get('qtrees').children_get()
-                qtree_names = filter(None, map(lambda el: el.child_get_string('qtree'), qtree_els))
-                return map(lambda name: Qtree(self.filer, self.name, name), qtree_names)
+                qtree_names = [_f for _f in [el.child_get_string('qtree') for el in qtree_els] if _f]
+                return [Qtree(self.filer, self.name, name) for name in qtree_names]
 
     def create_qtree(self, qtree_name):
         with self.use_context():
