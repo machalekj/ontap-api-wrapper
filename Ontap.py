@@ -34,7 +34,7 @@ class OntapApiException(OntapException):
 class Filer(object):
     """A NetApp filer."""
 
-    def __init__(self, hostname, user, passwd, transport_type = 'HTTPS', major_version=1, minor_version=3, timeout=None, verify=True):
+    def __init__(self, hostname, user, passwd, transport_type = 'HTTPS', major_version=1, minor_version=19, timeout=None, verify=True):
         self.api = NaServer(hostname, major_version, minor_version)
         self.api.set_style('LOGIN')
         self.api.set_admin_user(user, passwd)
