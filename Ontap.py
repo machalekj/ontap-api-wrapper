@@ -1,3 +1,5 @@
+from __future__ import absolute_import
+
 import re
 import sys
 import operator
@@ -7,8 +9,8 @@ from ssl import SSLError
 
 import six
 
-from NaElement import NaElement
-from NaServer import NaServer
+from netapp.NaElement import NaElement
+from netapp.NaServer import NaServer
 
 class OntapException(Exception):
     """Exception for syntax errors passed to API calls."""
@@ -31,12 +33,14 @@ class OntapApiException(OntapException):
 class Filer(object):
     """A NetApp filer."""
 
-    def __init__(self, hostname, user, passwd, transport_type = 'HTTPS', major_version=1, minor_version=3, timeout=None):
+    def __init__(self, hostname, user, passwd, transport_type = 'HTTPS', major_version=1, minor_version=3, timeout=None, verify=True):
         self.api = NaServer(hostname, major_version, minor_version)
         self.api.set_style('LOGIN')
         self.api.set_admin_user(user, passwd)
         self.api.set_transport_type(transport_type)
         self.api.set_timeout(timeout)
+        if hasattr(self.api, 'set_ssl_verification'):
+            self.api.set_ssl_verification(verify)
         #self.api.set_debug_style('NA_PRINT_DONT_PARSE')
 
         self.name = hostname
