@@ -14,5 +14,16 @@ setup(name='ontap-api-wrapper',
       packages=['netapp'],
       install_requires=['six'],
       url='https://github.com/machalekj/ontap-api-wrapper',
+      download_url='https://github.com/machalekj/ontap-api-wrapper/archive/v0.5.2.tar.gz',
+      classifiers=[
+          'Intended Audience :: Developers',
+          'License :: OSI Approved :: Apache Software License',
+          'Topic :: Software Development :: Libraries :: Python Modules',
+          'Programming Language :: Python :: 2.7',
+          'Programming Language :: Python :: 3',
+          'Programming Language :: Python :: 3.4',
+          'Programming Language :: Python :: 3.5',
+          'Programming Language :: Python :: 3.6',
+      ]
      )
 
