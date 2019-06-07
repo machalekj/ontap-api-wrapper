@@ -425,9 +425,14 @@ class Filer(object):
                     uuid = volume.child_get('volume-id-attributes').child_get_string('instance-uuid')
                     aggr = Aggr(self, volume.child_get('volume-id-attributes').child_get_string('containing-aggregate-name'))
                     space_attrs = volume.child_get('volume-space-attributes')
-                    size_used = space_attrs.child_get_int('size-used') if space_attrs.child_get_string('size-used') is not None else 0
-                    size_available = space_attrs.child_get_int('size-available') if space_attrs.child_get_string('size-available') is not None else 0
-                    size_total = space_attrs.child_get_int('size-total') if space_attrs.child_get_string('size-total') is not None else 0
+                    if space_attrs is not None:
+                        size_used = space_attrs.child_get_int('size-used') if space_attrs.child_get_string('size-used') is not None else 0
+                        size_available = space_attrs.child_get_int('size-available') if space_attrs.child_get_string('size-available') is not None else 0
+                        size_total = space_attrs.child_get_int('size-total') if space_attrs.child_get_string('size-total') is not None else 0
+                    else:
+                        size_used = None
+                        size_available = None
+                        size_total = None
                     lang_attrs = volume.child_get('volume-language-attributes')
                     language_code = lang_attrs.child_get_string('language-code')
                     volumes.append(FlexVol(self, name, vserver_name=vserver_name, size_used=size_used, size_available=size_available, size_total=size_total, uuid=uuid, containing_aggregate=aggr, language_code=language_code))
