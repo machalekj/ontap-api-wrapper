@@ -1781,12 +1781,14 @@ class FlexVol(object):
         vol_attrs_set_el = NaElement('volume-attributes')
         vol_attrs_set_el.child_add(vol_qos_el)
         attributes_el = NaElement('attributes')
+        attributes_el.child_add(vol_attrs_set_el)
         self.modify(attributes_el)
 
     def modify(self, attributes_el):
         """General modify call for c-mode."""
 
         if self.filer.cluster_mode:
+            api = NaElement('volume-modify-iter')
             api.child_add(self._get_query_element())
             api.child_add(attributes_el)
             xo = self.filer.invoke_elem(api)
