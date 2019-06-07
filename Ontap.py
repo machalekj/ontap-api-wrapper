@@ -375,7 +375,10 @@ class Filer(object):
                         size_available = None
                         size_total = None
                     lang_attrs = volume.child_get('volume-language-attributes')
-                    language_code = lang_attrs.child_get_string('language-code') if lang_attrs is not None else None
+					if lang_attrs:
+						language_code = lang_attrs.child_get_string('language-code') if lang_attrs is not None else None
+					else:
+						language_code = None
                     return FlexVol(
                         self, name, vserver_name=vserver_name,
                         size_used=size_used,
@@ -434,7 +437,10 @@ class Filer(object):
                         size_available = None
                         size_total = None
                     lang_attrs = volume.child_get('volume-language-attributes')
-                    language_code = lang_attrs.child_get_string('language-code')
+					if lang_attrs is not None:
+						language_code = lang_attrs.child_get_string('language-code')
+					else:
+						language_code = None
                     volumes.append(FlexVol(self, name, vserver_name=vserver_name, size_used=size_used, size_available=size_available, size_total=size_total, uuid=uuid, containing_aggregate=aggr, language_code=language_code))
         else:
             out = self.invoke('volume-list-info')
