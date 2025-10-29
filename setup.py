@@ -3,7 +3,7 @@
 from setuptools import setup
 
 setup(name='ontap-api-wrapper',
-      version='0.5.4.post0',
+      version='0.5.5',
       description='Python wrapper for NetApp Manageability SDK',
       author='Andrew Leonard',
       author_email='andy.leonard@sbri.org',
@@ -14,7 +14,7 @@ setup(name='ontap-api-wrapper',
       packages=['netapp'],
       install_requires=['six'],
       url='https://github.com/machalekj/ontap-api-wrapper',
-      download_url='https://github.com/machalekj/ontap-api-wrapper/archive/v0.5.4.tar.gz',
+      download_url='https://github.com/machalekj/ontap-api-wrapper/archive/v0.5.5.tar.gz',
       classifiers=[
           'Intended Audience :: Developers',
           'License :: OSI Approved :: Apache Software License',
@@ -24,6 +24,12 @@ setup(name='ontap-api-wrapper',
           'Programming Language :: Python :: 3.4',
           'Programming Language :: Python :: 3.5',
           'Programming Language :: Python :: 3.6',
+          'Programming Language :: Python :: 3.7',
+          'Programming Language :: Python :: 3.8',
+          'Programming Language :: Python :: 3.9',
+          'Programming Language :: Python :: 3.10',
+          'Programming Language :: Python :: 3.11',
+          'Programming Language :: Python :: 3.12',
       ]
      )
 
