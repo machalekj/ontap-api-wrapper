@@ -230,7 +230,7 @@ class NaElement :
         for i in children:
             c = i
 
-            if (not re.search('NaElement.NaElement', str(c.__class__), re.I)):
+            if (not re.search(r'NaElement.NaElement', str(c.__class__), re.I)):
                 sys.exit("Unexpected reference found, expected NaElement.NaElement not "+ str(c.__class__)+"\n")
 
             s = s+c.sprintf(indent + "\t")
@@ -313,7 +313,7 @@ class NaElement :
         for i in children :
             c = i
                       
-            if (not re.search("NaElement.NaElement",str(c.__class__),re.I)):
+            if (not re.search(r"NaElement.NaElement",str(c.__class__),re.I)):
                 sys.exit("Unexpected reference found, expected NaElement.NaElement not "+ str(c.__class__)+"\n")
 
             s = s+c.toEncodedString()

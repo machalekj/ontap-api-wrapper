@@ -1137,7 +1137,7 @@ class FlexVol(object):
         """
         self.filer = filer
 
-        m = re.match('^/vol/(.+)$', name)
+        m = re.match(r'^/vol/(.+)$', name)
         if m:
             name = m.groups()[0]
 
@@ -2218,7 +2218,7 @@ class Share(object):
         """
 
         output = self._get_cifs_share()
-        if re.match('^No share is matching that name\.', output):
+        if re.match(r'^No share is matching that name\.', output):
             return False
         else:
             return True

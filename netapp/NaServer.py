@@ -839,7 +839,7 @@ class NaServer :
                     else:
                         osName = "Linux"
                         osName = osName.rstrip()
-                        m = re.search("(.*?) \(.*?\)", osName)
+                        m = re.search(r"(.*?) \(.*?\)", osName)
                     if m:
                         osName = m.groups()[0]
                         pipe = os.popen('uname -p')
